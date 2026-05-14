@@ -26,28 +26,34 @@ end
 function M.references(text)
   local refs = {}
   local seen = {}
+  local source = tostring(text or '')
 
-  for raw in tostring(text or ''):gmatch '@[^%s]+#L%d+%-?L?%d*' do
-    local token = raw:gsub('[%.,;:%)%]%}]+$', '')
-    local path, start_line, end_line = token:match '^@(.+)#L(%d+)%-L?(%d+)$'
-    if not path then
-      path, start_line = token:match '^@(.+)#L(%d+)$'
-      end_line = start_line
-    end
+  local function collect(candidate)
+    for raw in candidate:gmatch '@[^%s]+#L%d+%-?L?%d*' do
+      local token = raw:gsub('[%.,;:%)%]%}]+$', '')
+      local path, start_line, end_line = token:match '^@(.+)#L(%d+)%-L?(%d+)$'
+      if not path then
+        path, start_line = token:match '^@(.+)#L(%d+)$'
+        end_line = start_line
+      end
 
-    if path and start_line then
-      local key = ('%s:%s:%s'):format(path, start_line, end_line or start_line)
-      if not seen[key] then
-        seen[key] = true
-        table.insert(refs, {
-          reference = token,
-          path = path,
-          start_line = tonumber(start_line),
-          end_line = tonumber(end_line or start_line),
-        })
+      if path and start_line then
+        local key = ('%s:%s:%s'):format(path, start_line, end_line or start_line)
+        if not seen[key] then
+          seen[key] = true
+          table.insert(refs, {
+            reference = token,
+            path = path,
+            start_line = tonumber(start_line),
+            end_line = tonumber(end_line or start_line),
+          })
+        end
       end
     end
   end
+
+  collect(source)
+  collect(source:gsub('\r?\n%s*', ''))
 
   return refs
 end
