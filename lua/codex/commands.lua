@@ -35,6 +35,8 @@ local function send_with_prompt(opts)
 
   if args and args ~= '' then
     do_send(args)
+  elseif range_selection then
+    do_send(config.selection_prompt)
   else
     vim.ui.input({ prompt = 'Codex prompt: ' }, do_send)
   end

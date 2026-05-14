@@ -13,7 +13,7 @@ local M = {}
 
 M.version = {
   major = 0,
-  minor = 2,
+  minor = 3,
   patch = 0,
   string = function(self)
     return string.format('%d.%d.%d', self.major, self.minor, self.patch)
@@ -79,16 +79,26 @@ function M.open()
     return
   end
 
-  ui.open()
   ensure_cli(function(ok)
     if ok then
-      app_server.start()
+      if config.app_server.ui == 'terminal' then
+        app_server.start(function(start_ok)
+          if start_ok then
+            app_server.open_terminal()
+          end
+        end)
+      else
+        ui.open()
+        app_server.start()
+      end
     end
   end)
 end
 
 function M.close()
   if config.backend == 'terminal' then
+    terminal.close()
+  elseif config.app_server.ui == 'terminal' then
     terminal.close()
   else
     ui.close()
@@ -99,6 +109,14 @@ function M.toggle()
   if config.backend == 'terminal' then
     terminal.toggle()
   else
+    if config.app_server.ui == 'terminal' then
+      if state.win and vim.api.nvim_win_is_valid(state.win) then
+        terminal.close()
+      else
+        M.open()
+      end
+      return
+    end
     ui.toggle()
     if state.win and vim.api.nvim_win_is_valid(state.win) then
       ensure_cli(function(ok)
@@ -111,9 +129,18 @@ function M.toggle()
 end
 
 function M.send(prompt, opts)
-  ui.open()
   ensure_cli(function(ok)
     if ok then
+      if config.app_server.ui == 'terminal' then
+        app_server.start(function(start_ok)
+          if start_ok then
+            app_server.open_terminal()
+            app_server.send(prompt, opts)
+          end
+        end)
+        return
+      end
+      ui.open()
       app_server.send(prompt, opts)
     end
   end)
@@ -163,6 +190,10 @@ function M._reset_for_tests()
     active_turn_id = nil,
     running = false,
     initialized = false,
+    server_job = nil,
+    listen_url = nil,
+    port = nil,
+    terminal_opened = false,
     pending_context = {},
     models = {},
     apps = {},

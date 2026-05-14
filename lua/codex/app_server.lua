@@ -1,11 +1,15 @@
 local approvals = require 'codex.approvals'
+local app_process = require 'codex.app_server_process'
+local editor = require 'codex.editor'
 local jsonrpc = require 'codex.jsonrpc'
 local logger = require 'codex.logger'
 local selection = require 'codex.selection'
 local state = require 'codex.state'
+local terminal = require 'codex.terminal'
 local tools = require 'codex.tools'
 local ui = require 'codex.ui'
 local util = require 'codex.util'
+local ws_rpc = require 'codex.ws_rpc'
 
 local M = {
   config = nil,
@@ -26,6 +30,10 @@ local function build_cmd(config)
     table.insert(cmd, feature)
   end
   return cmd
+end
+
+local function terminal_ui()
+  return M.config and M.config.app_server and M.config.app_server.ui == 'terminal'
 end
 
 local function text_item(text)
@@ -66,6 +74,18 @@ local function build_input(prompt, opts)
     })
     text = text
       .. ('\n\nSelected lines from %s:%d-%d:\n```text\n%s\n```'):format(name, start_line + 1, end_line + 1, sel.text or '')
+  elseif M.config.include_active_buffer_context then
+    local active = editor.active()
+    local description = editor.describe(active)
+    if active and description then
+      table.insert(pending, {
+        type = 'mention',
+        name = active.name,
+        path = active.path,
+        label = active.name,
+      })
+      text = text .. '\n\n' .. description
+    end
   end
 
   for _, item in ipairs(pending) do
@@ -94,6 +114,20 @@ local function build_input(prompt, opts)
   return input, context_items
 end
 
+local function editor_instructions()
+  if not M.config.app_server.editor_instructions then
+    return nil
+  end
+  if type(M.config.app_server.editor_instructions) == 'string' then
+    return M.config.app_server.editor_instructions
+  end
+  return table.concat({
+    'You are connected to Neovim through codex.nvim.',
+    'The dynamic tools in the nvim namespace expose the active editor, latest selection, open buffers, diagnostics, dirty state, saves, file opening, and diff review.',
+    'When a request depends on the current file, selected lines, open buffers, or diagnostics, inspect that Neovim state with the nvim tools before assuming context.',
+  }, ' ')
+end
+
 local function flush_ready(ok, err)
   local callbacks = M.ready_callbacks
   M.ready_callbacks = {}
@@ -112,13 +146,23 @@ local function on_notification(msg)
   elseif method == 'turn/completed' then
     state.app.running = false
     state.app.active_turn_id = nil
+  elseif method == 'thread/started' then
+    state.app.thread_id = params.thread and params.thread.id or state.app.thread_id
+  elseif method == 'thread/closed' then
+    if params.threadId == state.app.thread_id then
+      state.app.thread_id = nil
+      state.app.active_turn_id = nil
+      state.app.running = false
+    end
   elseif method == 'app/list/updated' then
     state.app.apps = params.data or {}
   elseif method == 'skills/changed' then
     state.app.skills = {}
   end
 
-  ui.render_notification(msg)
+  if not terminal_ui() then
+    ui.render_notification(msg)
+  end
 end
 
 local function on_request(msg, respond)
@@ -170,6 +214,10 @@ local function start_thread(callback)
   if M.config.app_server.dynamic_tools then
     params.dynamicTools = tools.get_specs()
   end
+  local instructions = editor_instructions()
+  if instructions then
+    params.developerInstructions = instructions
+  end
 
   state.app.client:request('thread/start', params, function(err, result)
     if err then
@@ -186,6 +234,81 @@ local function start_thread(callback)
   end)
 end
 
+local function connect_ws_client(listen_url, callback)
+  local attempts = 0
+  local max_attempts = M.config.app_server.connect_attempts or 100
+
+  local function attempt()
+    attempts = attempts + 1
+    local client = ws_rpc.new {
+      url = listen_url,
+      on_notification = on_notification,
+      on_request = on_request,
+      on_exit = function()
+        state.app.client = nil
+        state.app.initialized = false
+        state.app.thread_id = nil
+        state.app.active_turn_id = nil
+        state.app.running = false
+        M.starting = false
+      end,
+    }
+
+    client:start(function(ok, err)
+      if not ok then
+        client:stop()
+        if attempts < max_attempts then
+          vim.defer_fn(attempt, 50)
+        else
+          callback(false, { message = err or 'failed to connect to app-server websocket' })
+        end
+        return
+      end
+
+      state.app.client = client
+      callback(true)
+    end)
+  end
+
+  attempt()
+end
+
+local function start_websocket(callback)
+  app_process.start(M.config, function(process_ok, listen_url, process_err)
+    if not process_ok then
+      callback(false, { message = process_err })
+      return
+    end
+
+    connect_ws_client(listen_url, function(connect_ok, connect_err)
+      if not connect_ok then
+        callback(false, connect_err)
+        return
+      end
+
+      state.app.client:request('initialize', {
+        clientInfo = {
+          name = 'codex_nvim',
+          title = 'codex.nvim',
+          version = M.version,
+        },
+        capabilities = {
+          experimentalApi = M.config.app_server.experimental == true,
+        },
+      }, function(init_err)
+        if init_err then
+          callback(false, init_err)
+          return
+        end
+
+        state.app.client:notify('initialized', {})
+        state.app.initialized = true
+        start_thread(callback)
+      end)
+    end)
+  end)
+end
+
 function M.setup(config, version)
   M.config = config
   M.version = version or M.version
@@ -196,7 +319,11 @@ function M.start(callback)
   callback = callback or function() end
 
   if state.app.client and state.app.client:is_running() and state.app.initialized then
-    callback(true)
+    if state.app.thread_id then
+      callback(true)
+    else
+      start_thread(callback)
+    end
     return
   end
 
@@ -205,6 +332,14 @@ function M.start(callback)
     return
   end
   M.starting = true
+
+  if terminal_ui() then
+    start_websocket(function(ok, err)
+      M.starting = false
+      flush_ready(ok, err)
+    end)
+    return
+  end
 
   local client = jsonrpc.new {
     cmd = build_cmd(M.config),
@@ -263,11 +398,16 @@ function M.stop()
   if state.app.client then
     state.app.client:stop()
   end
+  app_process.stop()
   state.app.client = nil
+  state.app.server_job = nil
+  state.app.listen_url = nil
+  state.app.port = nil
   state.app.initialized = false
   state.app.thread_id = nil
   state.app.active_turn_id = nil
   state.app.running = false
+  state.app.terminal_opened = false
 end
 
 function M.new_thread(callback)
@@ -275,7 +415,9 @@ function M.new_thread(callback)
   state.app.active_turn_id = nil
   state.app.running = false
   state.app.items = {}
-  ui.clear()
+  if not terminal_ui() then
+    ui.clear()
+  end
   M.start(function(ok, err)
     if callback then
       callback(ok, err)
@@ -298,7 +440,11 @@ function M.send(prompt, opts)
     end
 
     local input, display_context = build_input(prompt, opts)
-    ui.render_user_input(prompt, display_context)
+    if terminal_ui() then
+      M.open_terminal()
+    else
+      ui.render_user_input(prompt, display_context)
+    end
 
     if state.app.running and state.app.active_turn_id then
       state.app.client:request('turn/steer', {
@@ -363,6 +509,17 @@ function M.add_file(path, start_line, end_line)
   })
   logger.info('Added Codex context:', context_label(state.app.pending_context[#state.app.pending_context]))
   return true
+end
+
+function M.open_terminal()
+  if not terminal_ui() or not M.config.app_server.open_terminal then
+    return
+  end
+  if not state.app.listen_url then
+    return
+  end
+  terminal.open_remote(state.app.listen_url, state.app.thread_id)
+  state.app.terminal_opened = true
 end
 
 function M.add_selection(sel)

@@ -4,6 +4,7 @@ local util = require 'codex.util'
 
 local M = {
   config = nil,
+  remote = nil,
 }
 
 function M.setup(config)
@@ -91,6 +92,28 @@ local function is_buf_reusable(buf)
   return type(buf) == 'number' and vim.api.nvim_buf_is_valid(buf)
 end
 
+local function build_cmd_args(config, remote)
+  local cmd_args = util.normalize_cmd(config.cmd)
+  if remote and remote.url then
+    if remote.thread_id then
+      table.insert(cmd_args, 'resume')
+      table.insert(cmd_args, '--remote')
+      table.insert(cmd_args, remote.url)
+      table.insert(cmd_args, remote.thread_id)
+    else
+      table.insert(cmd_args, '--remote')
+      table.insert(cmd_args, remote.url)
+    end
+    return cmd_args
+  end
+
+  if config.model then
+    table.insert(cmd_args, '-m')
+    table.insert(cmd_args, config.model)
+  end
+  return cmd_args
+end
+
 function M.open()
   local config = M.config
   if state.win and vim.api.nvim_win_is_valid(state.win) then
@@ -155,11 +178,7 @@ function M.open()
     return
   end
 
-  local cmd_args = util.normalize_cmd(config.cmd)
-  if config.model then
-    table.insert(cmd_args, '-m')
-    table.insert(cmd_args, config.model)
-  end
+  local cmd_args = build_cmd_args(config, M.remote)
 
   if config.use_buffer then
     state.job = vim.fn.jobstart(cmd_args, {
@@ -198,6 +217,14 @@ function M.open()
       end,
     })
   end
+end
+
+function M.open_remote(url, thread_id)
+  M.remote = {
+    url = url,
+    thread_id = thread_id,
+  }
+  M.open()
 end
 
 function M.close()

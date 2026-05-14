@@ -1,25 +1,23 @@
 # codex.nvim
 
-`codex.nvim` is a Neovim client for the Codex CLI App Server. It talks to `codex app-server` over stdio JSON-RPC, streams Codex turn events into a Neovim buffer, sends prompts and selected ranges with editor context, and exposes Neovim-aware dynamic tools to Codex.
+`codex.nvim` connects Neovim to Codex through the Codex App Server while keeping the Codex terminal UI as the primary interface. Neovim starts a local `codex app-server` WebSocket endpoint, opens `codex resume --remote ...` in a terminal split or float, and keeps a control client attached to the same App Server thread for editor-aware actions.
 
-The plugin keeps the original terminal wrapper available as a fallback, but the default backend is the App Server because it supports structured threads, streamed deltas, approvals, apps, skills, MCP server status, and IDE-style editor tools.
+The result is a terminal-first workflow with IDE context: visual selections send their file and line range directly, prompts include active-buffer context, and Codex can call Neovim dynamic tools for open files, selections, diagnostics, dirty state, saves, file opening, and diff review. Codex apps, skills, MCP servers, approvals, and model selection continue to come from the normal Codex configuration and App Server APIs.
 
 ## Features
 
-- App Server transport with `initialize`, `thread/start`, `turn/start`, `turn/steer`, and streamed `item/*` / `turn/*` notifications.
-- Accurate assistant text deltas in a Codex buffer or side panel.
-- Visual/range sending with file path, line range, and selected text context.
-- Pending file, app, and skill context for the next prompt.
-- Dynamic Neovim tools for `openFile`, selections, open editors, diagnostics, workspace folders, dirty checks, saves, and diff review.
-- App Server approval prompts for command execution, file changes, `request_user_input`, and MCP elicitations.
-- MCP inventory commands backed by `mcpServerStatus/list` and config reload support.
-- Model, app, and skill pickers backed by App Server RPCs.
-- Optional legacy terminal backend for users who still want a raw `codex` terminal.
+- Terminal UI backed by a local App Server WebSocket transport.
+- Visual/range `:CodexSend` without a second prompt; selected text, path, and line numbers are sent immediately.
+- Active-buffer context on Neovim-originated prompts.
+- Dynamic `nvim` tools for `openFile`, `getCurrentSelection`, `getLatestSelection`, `getOpenEditors`, diagnostics, workspace folders, dirty checks, saves, and diff review.
+- App Server approvals for commands, file changes, user-input requests, and MCP elicitations.
+- Codex app, skill, model, and MCP inventory commands.
+- Optional buffer transcript mode for App Server debugging and a legacy raw terminal backend.
 
 ## Requirements
 
 - Neovim with LuaJIT.
-- The Codex CLI on `PATH`.
+- Codex CLI on `PATH`.
 
 Install Codex with npm:
 
@@ -27,9 +25,12 @@ Install Codex with npm:
 npm install -g @openai/codex
 ```
 
-Codex authentication, models, MCP servers, apps, skills, sandboxing, and approvals are configured through the normal Codex configuration files and login flows. See the official Codex App Server documentation for protocol details:
+Codex authentication, MCP servers, apps, skills, sandboxing, approvals, and model defaults are configured through `~/.codex/config.toml` and the usual Codex login flows.
+
+Useful Codex references:
 
 - <https://developers.openai.com/codex/app-server>
+- <https://developers.openai.com/codex/cli/features#connect-the-tui-to-a-remote-app-server>
 - <https://developers.openai.com/codex/config-reference>
 
 ## Installation
@@ -68,14 +69,13 @@ return {
   },
   opts = {
     backend = 'app_server',
-    model = nil,
-    panel = false,
-    width = 0.8,
-    height = 0.8,
-    border = 'rounded',
+    panel = true,
+    width = 0.32,
     track_selection = true,
     app_server = {
+      ui = 'terminal',
       auto_start = true,
+      open_terminal = true,
       experimental = true,
       dynamic_tools = true,
       enable_features = { 'apps' },
@@ -86,10 +86,10 @@ return {
 
 ## Commands
 
-- `:Codex` toggles the Codex buffer. With arguments or a visual range, it sends a prompt.
-- `:CodexToggle` toggles the Codex buffer.
-- `:CodexSend [prompt]` sends a prompt. From visual mode or with a range, it includes the selected lines.
-- `:CodexAdd [path] [start_line] [end_line]` adds a file, directory, or current selection as context for the next prompt.
+- `:Codex` opens or toggles Codex. With arguments or a visual range, it sends a prompt.
+- `:CodexToggle` toggles the Codex terminal.
+- `:CodexSend [prompt]` sends a prompt. From visual mode or with a range, it sends the selected lines immediately; when no prompt is supplied, `selection_prompt` is used.
+- `:CodexAdd [path] [start_line] [end_line]` stages a file, directory, or selection as context for the next Neovim-originated prompt.
 - `:CodexNew` starts a fresh App Server thread.
 - `:CodexInterrupt` interrupts the active turn.
 - `:CodexSelectModel` chooses a model from `model/list`.
@@ -101,22 +101,19 @@ return {
 
 ## Selection Workflow
 
-Use visual mode and run:
+In visual mode, run:
+
+```vim
+:'<,'>CodexSend
+```
+
+The selection is sent without asking for another prompt. The request includes a file mention, the selected line range, and the selected text. Supplying text after the command uses that text as the prompt while keeping the same selection context:
 
 ```vim
 :'<,'>CodexSend Explain this code and suggest a refactor
 ```
 
-The request includes the selected file path, zero-based protocol positions internally, human-readable line numbers in the prompt, the selected text, and a file mention item for Codex.
-
-To stage context without sending immediately:
-
-```vim
-:CodexAdd %
-:CodexApps
-:CodexSkills
-:CodexSend Use the added context to update the implementation
-```
+Normal-mode prompts include the active file path, cursor position, filetype, dirty state, and line count so Codex has the same editor orientation it would have in an IDE session.
 
 ## Configuration
 
@@ -131,7 +128,9 @@ require('codex').setup({
   height = 0.8,
   border = 'single',
   track_selection = true,
+  include_active_buffer_context = true,
   visual_demotion_delay_ms = 50,
+  selection_prompt = 'Use the selected Neovim context.',
   keymaps = {
     toggle = nil,
     quit = '<C-q>',
@@ -139,10 +138,15 @@ require('codex').setup({
     interrupt = '<C-c>',
   },
   app_server = {
+    ui = 'terminal',
     listen = 'stdio://',
+    port = nil,
+    port_range = { min = 45000, max = 45999 },
     experimental = true,
     auto_start = true,
     dynamic_tools = true,
+    open_terminal = true,
+    editor_instructions = true,
     service_name = 'codex_nvim',
     approval_policy = nil,
     sandbox = nil,
@@ -152,7 +156,7 @@ require('codex').setup({
 })
 ```
 
-Set `backend = 'terminal'` to use the legacy raw terminal wrapper. The terminal backend still supports `panel`, `width`, `height`, `border`, `model`, and `use_buffer`.
+Set `app_server.ui = 'buffer'` to use the App Server transcript buffer for debugging. Set `backend = 'terminal'` to use the legacy raw `codex` terminal wrapper without App Server integration.
 
 ## Statusline
 

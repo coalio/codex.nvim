@@ -5,10 +5,14 @@ local M = {
 
   app = {
     client = nil,
+    server_job = nil,
+    listen_url = nil,
+    port = nil,
     thread_id = nil,
     active_turn_id = nil,
     running = false,
     initialized = false,
+    terminal_opened = false,
     pending_context = {},
     models = {},
     apps = {},

@@ -134,4 +134,82 @@ describe('codex.nvim', function()
     -- Restore original
     vim.fn = original_fn
   end)
+
+  it('sends visual ranges without asking for an extra prompt', function()
+    local sent_prompt
+    local sent_opts
+    local input_called = false
+    local original_input = vim.ui.input
+    vim.ui.input = function()
+      input_called = true
+    end
+
+    require('codex.commands').setup({
+      selection_prompt = 'Use selected context',
+      app_server = { ui = 'terminal' },
+    }, {
+      send = function(prompt, opts)
+        sent_prompt = prompt
+        sent_opts = opts
+      end,
+    })
+
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-command-selection.lua')
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'alpha', 'beta', 'gamma' })
+    vim.cmd '2,3CodexSend'
+
+    assert(not input_called, 'visual/range send should not call vim.ui.input')
+    eq('Use selected context', sent_prompt)
+    assert(sent_opts and sent_opts.selection, 'selection should be sent')
+    eq('beta\ngamma', sent_opts.selection.text)
+
+    vim.ui.input = original_input
+  end)
+
+  it('opens the terminal TUI against a remote app-server thread', function()
+    local original_fn = vim.fn
+    local received_cmd
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd, opts)
+        received_cmd = cmd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 456
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      model = 'gpt-test',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.8,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_remote('ws://127.0.0.1:45555', 'thread-123')
+
+    assert(received_cmd, 'termopen should be called')
+    eq('codex', received_cmd[1])
+    eq('resume', received_cmd[2])
+    assert(vim.tbl_contains(received_cmd, '--remote'), 'remote flag missing')
+    assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
+    assert(vim.tbl_contains(received_cmd, 'thread-123'), 'thread id missing')
+
+    vim.fn = original_fn
+  end)
 end)
