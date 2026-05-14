@@ -30,6 +30,7 @@ describe('codex.nvim cold start installer flow', function()
   it('installs via selected PM and opens the window', function()
     local codex = require 'codex'
     codex.setup {
+      backend = 'terminal',
       cmd = 'codex',
       autoinstall = true,
     }

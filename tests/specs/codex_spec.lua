@@ -6,6 +6,18 @@ local eq = assert.equals
 
 describe('codex.nvim', function()
   before_each(function()
+    for _, module in ipairs {
+      'codex',
+      'codex.app_server',
+      'codex.commands',
+      'codex.config',
+      'codex.selection',
+      'codex.state',
+      'codex.terminal',
+      'codex.ui',
+    } do
+      package.loaded[module] = nil
+    end
     vim.cmd 'set noswapfile' -- prevent side effects
     vim.cmd 'silent! bwipeout!' -- close any open codex windows
   end)
@@ -19,15 +31,17 @@ describe('codex.nvim', function()
   end)
 
   it('creates Codex commands', function()
-    require('codex').setup { keymaps = {} }
+    require('codex').setup { backend = 'terminal', keymaps = {} }
 
     local cmds = vim.api.nvim_get_commands {}
     assert(cmds['Codex'], 'Codex command not found')
     assert(cmds['CodexToggle'], 'CodexToggle command not found')
+    assert(cmds['CodexSend'], 'CodexSend command not found')
+    assert(cmds['CodexMcp'], 'CodexMcp command not found')
   end)
 
   it('opens a floating terminal window', function()
-    require('codex').setup { cmd = { 'echo', 'test' } }
+    require('codex').setup { backend = 'terminal', cmd = { 'echo', 'test' } }
     require('codex').open()
 
     local win = vim.api.nvim_get_current_win()
@@ -39,7 +53,7 @@ describe('codex.nvim', function()
   end)
 
   it('toggles the window', function()
-    require('codex').setup { cmd = { 'echo', 'test' } }
+    require('codex').setup { backend = 'terminal', cmd = { 'echo', 'test' } }
 
     require('codex').toggle()
     local win1 = vim.api.nvim_get_current_win()
@@ -57,14 +71,22 @@ describe('codex.nvim', function()
   end)
 
   it('shows statusline only when job is active but window is not', function()
-    require('codex').setup { cmd = { 'sleep', '1000' } }
+    require('codex').setup { backend = 'terminal', cmd = { 'sleep', '1000' } }
     require('codex').open()
 
-    vim.defer_fn(function()
-      require('codex').close()
-      local status = require('codex').statusline()
-      eq(status, '[Codex]')
-    end, 100)
+    vim.wait(500, function()
+      return require('codex.state').job ~= nil
+    end, 10)
+
+    require('codex').close()
+    local status = require('codex').statusline()
+    eq(status, '[Codex]')
+
+    local job = require('codex.state').job
+    if job then
+      vim.fn.jobstop(job)
+      require('codex.state').job = nil
+    end
   end)
 
   it('passes -m <model> to termopen when configured', function()
@@ -89,9 +111,11 @@ describe('codex.nvim', function()
     -- Reload module fresh
     package.loaded['codex'] = nil
     package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
     local codex = require 'codex'
 
     codex.setup {
+      backend = 'terminal',
       cmd = 'codex',
       model = 'o3-mini',
     }
