@@ -201,19 +201,6 @@ local function flush_pending_injections()
   inject_items(pending)
 end
 
-local function queue_selection_injection(opts)
-  local item = prompt_builder.selection_injection(opts and opts.selection)
-  if not item then
-    return
-  end
-
-  if state.app.thread_id then
-    inject_items({ item })
-  else
-    table.insert(state.app.pending_injections, item)
-  end
-end
-
 local function flush_ready(ok, err)
   local callbacks = M.ready_callbacks
   M.ready_callbacks = {}
@@ -558,14 +545,21 @@ function M.send(prompt, opts)
 
     if terminal_ui() then
       if opts.submit == false then
-        queue_selection_injection(opts)
         terminal.insert(prompt, vim.tbl_extend('force', opts, { focus = false }))
         M.open_terminal({ focus = false })
       elseif state.app.thread_id then
         local input = build_input(prompt, opts)
-        dispatch_turn(input)
+        local prompt_text = input[1] and input[1].text or prompt
+        M.inject_prompt_references(prompt_text, function()
+          dispatch_turn(input)
+        end)
       else
-        table.insert(state.app.pending_sends, build_input(prompt, opts))
+        local input = build_input(prompt, opts)
+        local prompt_text = input[1] and input[1].text or prompt
+        for _, item in ipairs(prompt_builder.injection_items_from_text(prompt_text)) do
+          table.insert(state.app.pending_injections, item)
+        end
+        table.insert(state.app.pending_sends, input)
         M.open_terminal()
       end
       return
@@ -573,8 +567,30 @@ function M.send(prompt, opts)
 
     local input, display_context = build_input(prompt, opts)
     ui.render_user_input(prompt, display_context)
-    dispatch_turn(input)
+    local prompt_text = input[1] and input[1].text or prompt
+    M.inject_prompt_references(prompt_text, function()
+      dispatch_turn(input)
+    end)
   end)
+end
+
+function M.inject_prompt_references(prompt_text, callback)
+  callback = callback or function() end
+  local items = prompt_builder.injection_items_from_text(prompt_text)
+  if not items or #items == 0 then
+    callback()
+    return
+  end
+
+  if state.app.thread_id then
+    inject_items(items, callback)
+    return
+  end
+
+  for _, item in ipairs(items) do
+    table.insert(state.app.pending_injections, item)
+  end
+  callback()
 end
 
 function M.interrupt()

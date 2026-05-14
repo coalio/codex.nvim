@@ -380,6 +380,114 @@ describe('codex.nvim', function()
     assert(not text:match 'print%("hi"%)', 'prompt should not include selected source text')
   end)
 
+  it('builds hidden injection items from visible prompt references', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    local prompt = require 'codex.prompt'
+
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-visible-reference.lua')
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'local a = 1', 'local b = 2', 'return a + b' })
+
+    local items = prompt.injection_items_from_text('Review @/tmp/codex-visible-reference.lua#L2-L3')
+
+    eq(1, #items)
+    local text = items[1].content[1].text
+    assert(text:match '@/tmp/codex%-visible%-reference%.lua#L2%-L3', 'injection should identify the referenced range')
+    assert(text:match 'local b = 2\nreturn a %+ b', 'injection should include the referenced source text')
+    eq(0, #prompt.injection_items_from_text('Review this code after removing the mention'))
+  end)
+
+  it('does not inject hidden context when only inserting a selection reference', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.app_server'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    local app_server = require 'codex.app_server'
+    local state = require 'codex.state'
+    local terminal = require 'codex.terminal'
+    local inserted
+    local request_called = false
+
+    app_server.setup({
+      model = nil,
+      include_active_buffer_context = false,
+      app_server = {
+        ui = 'terminal',
+        open_terminal = false,
+      },
+    })
+    state.app.client = {
+      is_running = function()
+        return true
+      end,
+      request = function()
+        request_called = true
+      end,
+    }
+    state.app.initialized = true
+    state.app.thread_id = 'thread-1'
+    terminal.insert = function(prompt_text, opts)
+      inserted = { prompt = prompt_text, opts = opts }
+      return true
+    end
+    app_server.open_terminal = function() end
+
+    app_server.send('', {
+      submit = false,
+      selection = {
+        filePath = '/tmp/example.lua',
+        text = 'print("hi")',
+        selection = {
+          isEmpty = false,
+          start = { line = 4, character = 0 },
+          ['end'] = { line = 4, character = 11 },
+        },
+      },
+    })
+
+    assert(inserted and inserted.opts.selection, 'selection reference should be inserted into the terminal prompt')
+    assert(not request_called, 'thread/inject_items should not run before the user submits the prompt')
+  end)
+
+  it('submits terminal input after injecting visible prompt references', function()
+    local original_fn = vim.fn
+    local sent = {}
+    local injected_prompt
+
+    vim.fn = setmetatable({
+      chansend = function(_, text)
+        table.insert(sent, text)
+        return #text
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
+    package.loaded['codex.app_server'] = {
+      inject_prompt_references = function(prompt_text, callback)
+        injected_prompt = prompt_text
+        callback()
+      end,
+    }
+
+    local state = require 'codex.state'
+    local terminal = require 'codex.terminal'
+    state.buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, {
+      'Previous output',
+      '› Review @src/example.lua#L1-L2',
+    })
+    state.job = 321
+
+    terminal.submit()
+
+    assert(injected_prompt:match '@src/example%.lua#L1%-L2', 'submit should parse the visible terminal prompt')
+    eq('\r', sent[#sent])
+
+    vim.fn = original_fn
+  end)
+
   it('does not reuse a dirty buffer for terminal startup', function()
     local original_fn = vim.fn
     local old_buf = vim.api.nvim_create_buf(false, false)

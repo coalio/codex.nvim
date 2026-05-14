@@ -23,21 +23,90 @@ function M.selection_reference(sel)
   return ('@%s#L%d-L%d'):format(name, start_line, end_line)
 end
 
-function M.selection_injection(sel)
-  local ref = M.selection_reference(sel)
-  if not ref or not sel.text or sel.text == '' then
+function M.references(text)
+  local refs = {}
+  local seen = {}
+
+  for raw in tostring(text or ''):gmatch '@[^%s]+#L%d+%-?L?%d*' do
+    local token = raw:gsub('[%.,;:%)%]%}]+$', '')
+    local path, start_line, end_line = token:match '^@(.+)#L(%d+)%-L?(%d+)$'
+    if not path then
+      path, start_line = token:match '^@(.+)#L(%d+)$'
+      end_line = start_line
+    end
+
+    if path and start_line then
+      local key = ('%s:%s:%s'):format(path, start_line, end_line or start_line)
+      if not seen[key] then
+        seen[key] = true
+        table.insert(refs, {
+          reference = token,
+          path = path,
+          start_line = tonumber(start_line),
+          end_line = tonumber(end_line or start_line),
+        })
+      end
+    end
+  end
+
+  return refs
+end
+
+local function absolute_path(path)
+  if not path or path == '' then
     return nil
   end
-  return {
-    type = 'message',
-    role = 'user',
-    content = {
-      {
-        type = 'input_text',
-        text = ('Selected Neovim context %s:\n```text\n%s\n```'):format(ref, sel.text),
-      },
-    },
-  }
+  if path:sub(1, 1) == '~' then
+    return vim.fn.fnamemodify(path, ':p')
+  end
+  if path:sub(1, 1) == '/' then
+    return vim.fn.fnamemodify(path, ':p')
+  end
+  return vim.fn.fnamemodify(util.cwd() .. '/' .. path, ':p')
+end
+
+local function buffer_lines(path, start_line, end_line)
+  local abs = absolute_path(path)
+  if not abs then
+    return nil
+  end
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) == abs then
+      return vim.api.nvim_buf_get_lines(bufnr, start_line - 1, end_line, false)
+    end
+  end
+
+  if vim.fn.filereadable(abs) ~= 1 then
+    return nil
+  end
+
+  local lines = vim.fn.readfile(abs)
+  local selected = {}
+  for line = start_line, math.min(end_line, #lines) do
+    table.insert(selected, lines[line])
+  end
+  return selected
+end
+
+function M.injection_items_from_text(text)
+  local items = {}
+  for _, ref in ipairs(M.references(text)) do
+    local lines = buffer_lines(ref.path, ref.start_line, ref.end_line)
+    if lines and #lines > 0 then
+      table.insert(items, {
+        type = 'message',
+        role = 'user',
+        content = {
+          {
+            type = 'input_text',
+            text = ('Selected Neovim context %s:\n```text\n%s\n```'):format(ref.reference, table.concat(lines, '\n')),
+          },
+        },
+      })
+    end
+  end
+  return items
 end
 
 function M.input_reference(prompt, opts, config)

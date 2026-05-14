@@ -2,14 +2,14 @@
 
 `codex.nvim` connects Neovim to Codex through the Codex App Server while keeping the Codex terminal UI as the primary interface. Neovim starts a local `codex app-server` WebSocket endpoint, opens `codex --remote ...` in a terminal split or float, and keeps a lightweight control client attached for App Server actions.
 
-The result is a terminal-first workflow with IDE context. Visual selections are inserted as compact file-range references, selected text can be injected into the App Server thread without starting a turn, and Neovim-originated prompts include active-buffer context. Codex apps, skills, MCP servers, approvals, and model selection continue to come from the normal Codex configuration and App Server APIs.
+The result is a terminal-first workflow with IDE context. Visual selections are inserted as compact file-range references, visible references are resolved into hidden source context when the prompt is submitted, and Neovim-originated prompts include active-buffer context. Codex apps, skills, MCP servers, approvals, and model selection continue to come from the normal Codex configuration and App Server APIs.
 
 ## Features
 
 - Terminal UI backed by a local App Server WebSocket transport.
 - The terminal pane opens immediately; App Server startup and TUI connection happen asynchronously.
 - Visual/range `:CodexSend` without a second prompt; no-argument sends insert an `@file#Lx-Ly` reference into the Codex prompt and leave the user in control.
-- Hidden selected-text injection through `thread/inject_items` when a terminal App Server thread is loaded.
+- Submit-time hidden source injection through `thread/inject_items` for visible `@file#Lx-Ly` prompt references.
 - Active-buffer context on Neovim-originated prompts.
 - App Server thread tracking, so explicit sends use the active terminal thread after the TUI connects.
 - App Server approvals for commands, file changes, user-input requests, and MCP elicitations.
@@ -115,7 +115,7 @@ The selection is sent without asking for another prompt. With no command argumen
 @analytics/report_exports.py#L697-L703
 ```
 
-When a terminal App Server thread is already loaded, the selected text is also injected into model-visible history without starting a turn. This keeps the prompt uncluttered while still giving Codex the exact selected text. Supplying text after the command submits that text with the same compact selection reference:
+The inserted reference remains editable text in the Codex prompt. When the prompt is submitted, codex.nvim parses the visible `@file#Lx-Ly` references and injects the referenced source into the App Server thread before Codex receives the turn. Removing a reference before submitting also removes its hidden source injection. Supplying text after the command submits that text with the same compact selection reference:
 
 ```vim
 :'<,'>CodexSend Explain this code and suggest a refactor

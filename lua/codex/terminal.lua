@@ -27,6 +27,10 @@ local function create_clean_buf(config)
     vim.api.nvim_buf_set_keymap(buf, 't', config.keymaps.quit, [[<C-\><C-n>]] .. quit_cmd, { noremap = true, silent = true })
     vim.api.nvim_buf_set_keymap(buf, 'n', config.keymaps.quit, quit_cmd, { noremap = true, silent = true })
   end
+  vim.api.nvim_buf_set_keymap(buf, 't', '<CR>', [[<C-\><C-n><cmd>lua require('codex.terminal').submit()<CR>]], {
+    noremap = true,
+    silent = true,
+  })
 
   return buf
 end
@@ -380,6 +384,65 @@ function M.insert(prompt, opts)
     M.open(opts)
   end
   return true
+end
+
+local function current_prompt_text()
+  if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+    return ''
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)
+  local start_index
+  local prompt_pattern
+  for i = #lines, 1, -1 do
+    local line_prompt_pattern = nil
+    if lines[i]:match '^%s*>%s+' then
+      line_prompt_pattern = '^%s*>%s+'
+    elseif lines[i]:match '^%s*›%s+' then
+      line_prompt_pattern = '^%s*›%s+'
+    end
+    if line_prompt_pattern then
+      start_index = i
+      prompt_pattern = line_prompt_pattern
+      break
+    end
+  end
+
+  if not start_index then
+    return ''
+  end
+
+  local prompt_lines = {}
+  for i = start_index, #lines do
+    local line = lines[i]
+    if i == start_index then
+      line = line:gsub(prompt_pattern, '', 1)
+    end
+    table.insert(prompt_lines, line)
+  end
+  return table.concat(prompt_lines, '\n')
+end
+
+function M.submit()
+  local prompt = current_prompt_text()
+
+  local function send_enter()
+    if state.job then
+      pcall(vim.fn.chansend, state.job, '\r')
+    end
+    if state.win and vim.api.nvim_win_is_valid(state.win) then
+      vim.api.nvim_set_current_win(state.win)
+      vim.cmd 'startinsert'
+    end
+  end
+
+  local ok, app_server = pcall(require, 'codex.app_server')
+  if ok and type(app_server.inject_prompt_references) == 'function' then
+    app_server.inject_prompt_references(prompt, send_enter)
+    return
+  end
+
+  send_enter()
 end
 
 function M.open_placeholder(opts)
