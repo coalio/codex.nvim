@@ -162,8 +162,9 @@ describe('codex.nvim', function()
     vim.cmd '2,3CodexSend'
 
     assert(not input_called, 'visual/range send should not call vim.ui.input')
-    eq('Use selected context', sent_prompt)
+    eq('', sent_prompt)
     assert(sent_opts and sent_opts.selection, 'selection should be sent')
+    eq(false, sent_opts.submit)
     eq('beta\ngamma', sent_opts.selection.text)
 
     vim.ui.input = original_input
@@ -256,9 +257,10 @@ describe('codex.nvim', function()
     vim.fn = original_fn
   end)
 
-  it('queues selected text as the initial remote terminal prompt', function()
+  it('inserts selected file references into the remote terminal prompt', function()
     local original_fn = vim.fn
     local received_cmd
+    local sent = {}
 
     vim.fn = setmetatable({
       executable = function()
@@ -266,12 +268,12 @@ describe('codex.nvim', function()
       end,
       termopen = function(cmd, opts)
         received_cmd = cmd
-        if type(opts.on_exit) == 'function' then
-          vim.defer_fn(function()
-            opts.on_exit(0)
-          end, 10)
-        end
+        assert(type(opts.on_exit) == 'function', 'termopen should receive on_exit')
         return 654
+      end,
+      chansend = function(_, text)
+        table.insert(sent, text)
+        return #text
       end,
     }, { __index = original_fn })
 
@@ -292,7 +294,7 @@ describe('codex.nvim', function()
     }
 
     terminal.open_placeholder()
-    terminal.send('Use selected context', {
+    terminal.insert('', {
       selection = {
         filePath = '/tmp/example.lua',
         text = 'print("hi")',
@@ -306,12 +308,37 @@ describe('codex.nvim', function()
     terminal.open_remote('ws://127.0.0.1:45555')
 
     assert(received_cmd, 'termopen should be called')
-    local initial_prompt = received_cmd[#received_cmd]
-    assert(initial_prompt:match 'Use selected context', 'initial prompt should include the requested prompt')
-    assert(initial_prompt:match 'Selected lines from /tmp/example.lua:5%-5', 'initial prompt should include the selected range')
-    assert(initial_prompt:match 'print%("hi"%)', 'initial prompt should include selected text')
+    eq(3, #received_cmd)
+    assert(not vim.tbl_contains(received_cmd, 'print("hi")'), 'remote command should not receive selected source text')
+    vim.wait(1000, function()
+      return #sent > 0
+    end, 10)
+    local pasted = table.concat(sent, '')
+    assert(pasted:match '@/tmp/example%.lua#L5', 'terminal insert should use compact file-line reference')
+    assert(not pasted:match 'print%("hi"%)', 'terminal insert should not include selected source text')
 
     vim.fn = original_fn
+  end)
+
+  it('formats submitted selections as compact references without source snippets', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    local prompt = require 'codex.prompt'
+    local text = prompt.terminal('Explain this', {
+      selection = {
+        filePath = '/tmp/example.lua',
+        text = 'print("hi")',
+        selection = {
+          isEmpty = false,
+          start = { line = 4, character = 0 },
+          ['end'] = { line = 6, character = 11 },
+        },
+      },
+    }, { include_active_buffer_context = false })
+
+    assert(text:match 'Explain this', 'prompt should include user text')
+    assert(text:match '@/tmp/example%.lua#L5%-L7', 'prompt should include compact line reference')
+    assert(not text:match 'print%("hi"%)', 'prompt should not include selected source text')
   end)
 
   it('does not reuse a dirty buffer for terminal startup', function()

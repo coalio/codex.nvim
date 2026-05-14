@@ -7,7 +7,8 @@ local M = {
   config = nil,
   remote = nil,
   requested = false,
-  pending_input = {},
+  pending_submits = {},
+  pending_inserts = {},
 }
 
 function M.setup(config)
@@ -149,9 +150,6 @@ local function build_cmd_args(config, remote)
   if remote and remote.url then
     table.insert(cmd_args, '--remote')
     table.insert(cmd_args, remote.url)
-    if #M.pending_input > 0 then
-      table.insert(cmd_args, table.remove(M.pending_input, 1))
-    end
     return cmd_args
   end
 
@@ -162,7 +160,7 @@ local function build_cmd_args(config, remote)
   return cmd_args
 end
 
-local function send_to_terminal(text)
+local function paste_to_terminal(text, submit)
   if not state.job or not text or text == '' then
     return false
   end
@@ -172,25 +170,34 @@ local function send_to_terminal(text)
     return false
   end
 
-  vim.defer_fn(function()
-    if state.job then
-      pcall(vim.fn.chansend, state.job, '\r')
-    end
-  end, 20)
+  if submit then
+    vim.defer_fn(function()
+      if state.job then
+        pcall(vim.fn.chansend, state.job, '\r')
+      end
+    end, 20)
+  end
   return true
 end
 
 function M.flush_pending()
-  if not state.job or #M.pending_input == 0 then
+  if not state.job or (#M.pending_submits == 0 and #M.pending_inserts == 0) then
     return
   end
 
-  local pending = M.pending_input
-  M.pending_input = {}
+  local pending_inserts = M.pending_inserts
+  local pending_submits = M.pending_submits
+  M.pending_inserts = {}
+  M.pending_submits = {}
   vim.defer_fn(function()
-    for _, text in ipairs(pending) do
+    for _, text in ipairs(pending_inserts) do
       if state.job then
-        send_to_terminal(text)
+        paste_to_terminal(text, false)
+      end
+    end
+    for _, text in ipairs(pending_submits) do
+      if state.job then
+        paste_to_terminal(text, true)
       end
     end
   end, 300)
@@ -290,7 +297,8 @@ function M.open()
           state.app.thread_id = nil
           state.app.session_id = nil
           M.remote = nil
-          M.pending_input = {}
+          M.pending_submits = {}
+          M.pending_inserts = {}
         end
       end,
     })
@@ -324,11 +332,29 @@ function M.send(prompt, opts)
   end
 
   M.requested = true
-  if send_to_terminal(text) then
+  if paste_to_terminal(text, true) then
     return true
   end
 
-  table.insert(M.pending_input, text)
+  table.insert(M.pending_submits, text)
+  if M.remote and M.remote.url then
+    M.open()
+  end
+  return true
+end
+
+function M.insert(prompt, opts)
+  local text = prompt_builder.input_reference(prompt, opts, M.config)
+  if text == '' then
+    return false
+  end
+
+  M.requested = true
+  if paste_to_terminal(text, false) then
+    return true
+  end
+
+  table.insert(M.pending_inserts, text)
   if M.remote and M.remote.url then
     M.open()
   end
@@ -352,7 +378,8 @@ end
 
 function M.close()
   M.requested = false
-  M.pending_input = {}
+  M.pending_submits = {}
+  M.pending_inserts = {}
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_close(state.win, true)
   end

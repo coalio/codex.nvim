@@ -225,6 +225,8 @@ function M._reset_for_tests()
     port = nil,
     session_id = nil,
     terminal_opened = false,
+    pending_sends = {},
+    pending_injections = {},
     pending_context = {},
     models = {},
     apps = {},

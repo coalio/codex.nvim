@@ -3,6 +3,7 @@ local app_process = require 'codex.app_server_process'
 local editor = require 'codex.editor'
 local jsonrpc = require 'codex.jsonrpc'
 local logger = require 'codex.logger'
+local prompt_builder = require 'codex.prompt'
 local selection = require 'codex.selection'
 local state = require 'codex.state'
 local terminal = require 'codex.terminal'
@@ -64,6 +65,7 @@ local function build_input(prompt, opts)
     local start_line = sel.selection.start.line
     local end_line = sel.selection['end'].line
     local name = util.relative_path(sel.filePath)
+    local ref = prompt_builder.selection_reference(sel)
     table.insert(pending, {
       type = 'mention',
       name = name,
@@ -72,8 +74,11 @@ local function build_input(prompt, opts)
       line_start = start_line,
       line_end = end_line,
     })
-    text = text
-      .. ('\n\nSelected lines from %s:%d-%d:\n```text\n%s\n```'):format(name, start_line + 1, end_line + 1, sel.text or '')
+    if text == '' then
+      text = ref or ''
+    else
+      text = text .. '\n\nSelected context: ' .. (ref or context_label(pending[#pending]))
+    end
   elseif M.config.include_active_buffer_context then
     local active = opts.active_context or editor.active()
     local description = opts.active_description or editor.describe(active)
@@ -128,6 +133,87 @@ local function editor_instructions()
   }, ' ')
 end
 
+local function dispatch_turn(input)
+  if state.app.running and state.app.active_turn_id then
+    state.app.client:request('turn/steer', {
+      threadId = state.app.thread_id,
+      input = input,
+      expectedTurnId = state.app.active_turn_id,
+    }, function(req_err)
+      if req_err then
+        logger.error('turn/steer failed:', req_err.message or util.text_content(req_err))
+      end
+    end)
+    return
+  end
+
+  state.app.client:request('turn/start', {
+    threadId = state.app.thread_id,
+    input = input,
+    cwd = util.cwd(),
+    model = M.config.model,
+  }, function(req_err, result)
+    if req_err then
+      state.app.running = false
+      logger.error('turn/start failed:', req_err.message or util.text_content(req_err))
+      return
+    end
+    state.app.running = true
+    state.app.active_turn_id = result and result.turn and result.turn.id or state.app.active_turn_id
+  end)
+end
+
+local function flush_pending_sends()
+  if not state.app.thread_id or not state.app.pending_sends or #state.app.pending_sends == 0 then
+    return
+  end
+  local pending = state.app.pending_sends
+  state.app.pending_sends = {}
+  for _, input in ipairs(pending) do
+    dispatch_turn(input)
+  end
+end
+
+local function inject_items(items, callback)
+  callback = callback or function() end
+  if not state.app.client or not state.app.thread_id or not items or #items == 0 then
+    callback()
+    return
+  end
+
+  state.app.client:request('thread/inject_items', {
+    threadId = state.app.thread_id,
+    items = items,
+  }, function(err)
+    if err then
+      logger.warn('thread/inject_items failed:', err.message or util.text_content(err))
+    end
+    callback()
+  end)
+end
+
+local function flush_pending_injections()
+  if not state.app.thread_id or not state.app.pending_injections or #state.app.pending_injections == 0 then
+    return
+  end
+  local pending = state.app.pending_injections
+  state.app.pending_injections = {}
+  inject_items(pending)
+end
+
+local function queue_selection_injection(opts)
+  local item = prompt_builder.selection_injection(opts and opts.selection)
+  if not item then
+    return
+  end
+
+  if state.app.thread_id then
+    inject_items({ item })
+  else
+    table.insert(state.app.pending_injections, item)
+  end
+end
+
 local function flush_ready(ok, err)
   local callbacks = M.ready_callbacks
   M.ready_callbacks = {}
@@ -150,12 +236,18 @@ local function on_notification(msg)
     local thread = params.thread or {}
     state.app.thread_id = thread.id or state.app.thread_id
     state.app.session_id = thread.sessionId or state.app.session_id
+    if terminal_ui() then
+      flush_pending_injections()
+      flush_pending_sends()
+    end
   elseif method == 'thread/closed' then
     if params.threadId == state.app.thread_id then
       state.app.thread_id = nil
       state.app.session_id = nil
       state.app.active_turn_id = nil
       state.app.running = false
+      state.app.pending_sends = {}
+      state.app.pending_injections = {}
     end
   elseif method == 'app/list/updated' then
     state.app.apps = params.data or {}
@@ -256,6 +348,8 @@ local function connect_ws_client(listen_url, callback)
         state.app.session_id = nil
         state.app.active_turn_id = nil
         state.app.running = false
+        state.app.pending_sends = {}
+        state.app.pending_injections = {}
         M.starting = false
       end,
     }
@@ -368,6 +462,8 @@ function M.start(callback)
       state.app.session_id = nil
       state.app.active_turn_id = nil
       state.app.running = false
+      state.app.pending_sends = {}
+      state.app.pending_injections = {}
       M.starting = false
       ui.append(('app-server exited with code %s'):format(tostring(code)))
     end,
@@ -422,6 +518,8 @@ function M.stop()
   state.app.active_turn_id = nil
   state.app.running = false
   state.app.terminal_opened = false
+  state.app.pending_sends = {}
+  state.app.pending_injections = {}
 end
 
 function M.new_thread(callback)
@@ -435,7 +533,7 @@ function M.new_thread(callback)
   end
   M.start(function(ok, err)
     if ok and terminal_ui() then
-      terminal.send('/new')
+      terminal.send('/new', { raw = true })
       M.open_terminal()
     end
     if callback then
@@ -458,42 +556,16 @@ function M.send(prompt, opts)
       return
     end
 
-    local function dispatch_turn(input)
-      if state.app.running and state.app.active_turn_id then
-        state.app.client:request('turn/steer', {
-          threadId = state.app.thread_id,
-          input = input,
-          expectedTurnId = state.app.active_turn_id,
-        }, function(req_err)
-          if req_err then
-            logger.error('turn/steer failed:', req_err.message or util.text_content(req_err))
-          end
-        end)
-        return
-      end
-
-      state.app.client:request('turn/start', {
-        threadId = state.app.thread_id,
-        input = input,
-        cwd = util.cwd(),
-        model = M.config.model,
-      }, function(req_err, result)
-        if req_err then
-          state.app.running = false
-          logger.error('turn/start failed:', req_err.message or util.text_content(req_err))
-          return
-        end
-        state.app.running = true
-        state.app.active_turn_id = result and result.turn and result.turn.id or state.app.active_turn_id
-      end)
-    end
-
     if terminal_ui() then
-      if state.app.thread_id then
+      if opts.submit == false then
+        queue_selection_injection(opts)
+        terminal.insert(prompt, opts)
+        M.open_terminal()
+      elseif state.app.thread_id then
         local input = build_input(prompt, opts)
         dispatch_turn(input)
       else
-        terminal.send(prompt, opts)
+        table.insert(state.app.pending_sends, build_input(prompt, opts))
         M.open_terminal()
       end
       return
