@@ -109,7 +109,7 @@ function M.open()
   end
 
   if M.config.panel then
-    vim.cmd 'vertical rightbelow vsplit'
+    vim.cmd 'botright vertical split'
     local win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, state.buf)
     vim.api.nvim_win_set_width(win, math.floor(vim.o.columns * M.config.width))

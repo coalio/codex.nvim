@@ -166,6 +166,14 @@ function M.setup(active_config, active_api)
     api.toggle()
   end, { desc = 'Toggle Codex window' })
 
+  vim.api.nvim_create_user_command('CodexResume', function()
+    api.resume()
+  end, { desc = 'Resume the latest Codex session for this workspace' })
+
+  vim.api.nvim_create_user_command('CodexFocus', function()
+    api.focus()
+  end, { desc = 'Focus the Codex terminal' })
+
   vim.api.nvim_create_user_command('CodexSend', send_with_prompt, { desc = 'Send prompt or selected range to Codex', nargs = '*', range = true })
   vim.api.nvim_create_user_command('CodexAdd', add_context, { desc = 'Add file, directory, or selection as Codex context', nargs = '*', complete = 'file', range = true })
 

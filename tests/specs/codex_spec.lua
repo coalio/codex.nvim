@@ -29,6 +29,8 @@ describe('codex.nvim', function()
     assert(codex.open, 'codex.open missing')
     assert(codex.close, 'codex.close missing')
     assert(codex.toggle, 'codex.toggle missing')
+    assert(codex.resume, 'codex.resume missing')
+    assert(codex.focus, 'codex.focus missing')
   end)
 
   it('creates Codex commands', function()
@@ -37,8 +39,14 @@ describe('codex.nvim', function()
     local cmds = vim.api.nvim_get_commands {}
     assert(cmds['Codex'], 'Codex command not found')
     assert(cmds['CodexToggle'], 'CodexToggle command not found')
+    assert(cmds['CodexResume'], 'CodexResume command not found')
+    assert(cmds['CodexFocus'], 'CodexFocus command not found')
     assert(cmds['CodexSend'], 'CodexSend command not found')
     assert(cmds['CodexMcp'], 'CodexMcp command not found')
+  end)
+
+  it('defaults panel width to one third of the editor', function()
+    eq(0.33, require('codex.config').defaults.width)
   end)
 
   it('opens a floating terminal window', function()
@@ -294,6 +302,83 @@ describe('codex.nvim', function()
     assert(not vim.tbl_contains(received_cmd, 'thread-123'), 'remote TUI should not resume app-server thread ids')
 
     vim.fn = original_fn
+  end)
+
+  it('resumes the latest workspace session through the remote app-server TUI', function()
+    local original_fn = vim.fn
+    local received_cmd
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd, opts)
+        received_cmd = cmd
+        assert(type(opts.on_exit) == 'function', 'termopen should receive on_exit')
+        return 457
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      model = 'gpt-test',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.33,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder()
+    terminal.open_remote('ws://127.0.0.1:45555', nil, { resume_last = true })
+
+    assert(received_cmd, 'termopen should be called')
+    eq('codex', received_cmd[1])
+    eq('resume', received_cmd[2])
+    assert(vim.tbl_contains(received_cmd, '--last'), 'resume should use --last')
+    assert(vim.tbl_contains(received_cmd, '--remote'), 'resume should connect to the remote app-server')
+    assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
+    assert(vim.tbl_contains(received_cmd, 'gpt-test'), 'configured model should be forwarded to resume')
+
+    vim.fn = original_fn
+  end)
+
+  it('opens panel mode as a full-height far-right split', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    vim.cmd 'only!'
+    vim.cmd 'new'
+    vim.cmd 'wincmd J'
+    local bottom_win = vim.api.nvim_get_current_win()
+    local bottom_height = vim.api.nvim_win_get_height(bottom_win)
+
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.33,
+      height = 0.8,
+      border = 'single',
+      panel = true,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder()
+
+    local codex_win = require('codex.state').win
+    local pos = vim.api.nvim_win_get_position(codex_win)
+    assert(pos[2] > 0, 'Codex panel should be on the right side')
+    assert(vim.api.nvim_win_get_height(codex_win) > bottom_height, 'Codex panel should span the full editor height')
+    assert(vim.api.nvim_win_get_width(codex_win) <= math.ceil(vim.o.columns * 0.4), 'Codex panel should not consume half the editor')
   end)
 
   it('inserts selected file references into the remote terminal prompt', function()

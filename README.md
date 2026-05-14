@@ -45,6 +45,8 @@ return {
   cmd = {
     'Codex',
     'CodexToggle',
+    'CodexResume',
+    'CodexFocus',
     'CodexSend',
     'CodexAdd',
     'CodexMcp',
@@ -72,7 +74,7 @@ return {
   opts = {
     backend = 'app_server',
     panel = true,
-    width = 0.32,
+    width = 0.33,
     track_selection = true,
     app_server = {
       ui = 'terminal',
@@ -90,6 +92,8 @@ return {
 
 - `:Codex` opens or toggles Codex. With arguments or a visual range, it sends a prompt.
 - `:CodexToggle` toggles the Codex terminal.
+- `:CodexResume` resumes the most recent Codex session for the current workspace.
+- `:CodexFocus` focuses the Codex terminal and enters insert mode when the TUI is running.
 - `:CodexSend [prompt]` sends a prompt. From visual mode or with a range, a prompt argument submits that prompt with an `@file#Lx-Ly` reference. Without a prompt argument, Codex inserts the reference into the TUI input and does not submit.
 - `:CodexAdd [path] [start_line] [end_line]` stages a file, directory, or selection as context for the next Neovim-originated prompt.
 - `:CodexNew` asks the terminal UI to start a fresh thread.
@@ -132,7 +136,7 @@ require('codex').setup({
   model = nil,
   autoinstall = true,
   panel = false,
-  width = 0.8,
+  width = 0.33,
   height = 0.8,
   border = 'single',
   track_selection = true,

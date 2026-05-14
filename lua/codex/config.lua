@@ -9,7 +9,7 @@ M.defaults = {
     interrupt = '<C-c>',
   },
   border = 'single',
-  width = 0.8,
+  width = 0.33,
   height = 0.8,
   cmd = 'codex',
   model = nil,

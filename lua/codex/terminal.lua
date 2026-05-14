@@ -89,7 +89,7 @@ local function open_window(config)
 end
 
 local function open_panel(config)
-  vim.cmd 'vertical rightbelow vsplit'
+  vim.cmd 'botright vertical split'
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, state.buf)
   vim.api.nvim_win_set_width(win, math.floor(vim.o.columns * config.width))
@@ -108,6 +108,17 @@ local function restore_win(win)
   if win and vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_set_current_win(win)
   end
+end
+
+local function focus_window(insert)
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    return false
+  end
+  vim.api.nvim_set_current_win(state.win)
+  if insert and state.job then
+    vim.cmd 'startinsert'
+  end
+  return true
 end
 
 local function is_buf_reusable(buf)
@@ -163,14 +174,31 @@ local function set_message(lines)
   vim.api.nvim_buf_set_option(state.buf, 'modifiable', was_modifiable)
 end
 
-local function build_cmd_args(config, remote)
+local function build_cmd_args(config, remote, opts)
+  opts = opts or {}
   local cmd_args = util.normalize_cmd(config.cmd)
   if remote and remote.url then
-    table.insert(cmd_args, '--remote')
-    table.insert(cmd_args, remote.url)
-    return cmd_args
+    if remote.resume_last then
+      table.insert(cmd_args, 'resume')
+      table.insert(cmd_args, '--last')
+      table.insert(cmd_args, '--remote')
+      table.insert(cmd_args, remote.url)
+      if config.model then
+        table.insert(cmd_args, '-m')
+        table.insert(cmd_args, config.model)
+      end
+      return cmd_args
+    else
+      table.insert(cmd_args, '--remote')
+      table.insert(cmd_args, remote.url)
+      return cmd_args
+    end
   end
 
+  if opts.resume_last then
+    table.insert(cmd_args, 'resume')
+    table.insert(cmd_args, '--last')
+  end
   if config.model then
     table.insert(cmd_args, '-m')
     table.insert(cmd_args, config.model)
@@ -275,11 +303,14 @@ function M.open(opts)
   ensure_window(config)
 
   if state.job then
+    if opts.insert then
+      focus_window(true)
+    end
     restore_win(restore_to)
     return
   end
 
-  local cmd_args = build_cmd_args(config, M.remote)
+  local cmd_args = build_cmd_args(config, M.remote, opts)
 
   if config.use_buffer then
     state.job = vim.fn.jobstart(cmd_args, {
@@ -328,6 +359,9 @@ function M.open(opts)
     if ok and type(job_or_err) == 'number' and job_or_err > 0 then
       state.job = job_or_err
       M.flush_pending()
+      if opts.insert then
+        focus_window(true)
+      end
     else
       state.job = nil
       state.buf = nil
@@ -345,6 +379,7 @@ function M.open_remote(url, thread_id, opts)
   M.remote = {
     url = url,
     thread_id = thread_id,
+    resume_last = opts and opts.resume_last == true,
   }
   M.open(opts)
   return true
@@ -450,7 +485,19 @@ function M.open_placeholder(opts)
   local restore_to = opts.focus == false and current_win() or nil
   M.requested = true
   ensure_window(M.config)
+  if opts.insert then
+    focus_window(true)
+  end
   restore_win(restore_to)
+end
+
+function M.focus(opts)
+  opts = opts or {}
+  if state.win and vim.api.nvim_win_is_valid(state.win) then
+    return focus_window(opts.insert ~= false)
+  end
+  M.open(vim.tbl_extend('force', opts, { focus = true }))
+  return focus_window(opts.insert ~= false)
 end
 
 function M.show_error(message)

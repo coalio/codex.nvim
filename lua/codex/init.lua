@@ -115,6 +115,66 @@ function M.open()
   end)
 end
 
+function M.resume()
+  if config.backend == 'terminal' then
+    terminal.open({ resume_last = true, insert = true })
+    return
+  end
+
+  if config.app_server.ui ~= 'terminal' then
+    M.open()
+    return
+  end
+
+  terminal.open_placeholder({ focus = true })
+  ensure_cli(function(ok)
+    if ok then
+      app_server.start(function(start_ok, err)
+        if not terminal.is_requested() then
+          return
+        end
+        if start_ok then
+          app_server.open_terminal({ resume_last = true, focus = true, insert = true })
+        else
+          terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
+        end
+      end)
+    end
+  end)
+end
+
+function M.focus()
+  if config.backend == 'terminal' then
+    terminal.focus({ insert = true })
+    return
+  end
+
+  if config.app_server.ui == 'terminal' then
+    if state.win and vim.api.nvim_win_is_valid(state.win) then
+      terminal.focus({ insert = true })
+      return
+    end
+    terminal.open_placeholder({ focus = true })
+    ensure_cli(function(ok)
+      if ok then
+        app_server.start(function(start_ok, err)
+          if not terminal.is_requested() then
+            return
+          end
+          if start_ok then
+            app_server.open_terminal({ focus = true, insert = true })
+          else
+            terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
+          end
+        end)
+      end
+    end)
+    return
+  end
+
+  ui.open()
+end
+
 function M.close()
   if config.backend == 'terminal' then
     terminal.close()
