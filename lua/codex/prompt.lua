@@ -28,27 +28,47 @@ function M.references(text)
   local seen = {}
   local source = tostring(text or '')
 
+  local function collect_token(raw)
+    local token = raw:gsub('[%.,;:%)%]%}]+$', '')
+    local has_marker = token:sub(1, 1) == '@'
+    local path, start_line, end_line = token:match '^@?(.+)#L(%d+)%-L?(%d+)$'
+    if not path then
+      path, start_line = token:match '^@?(.+)#L(%d+)$'
+      end_line = start_line
+    end
+
+    if path and start_line then
+      if
+        not has_marker
+        and not (
+          path:match '^/'
+          or path:match '^~/'
+          or path:match '^%./'
+          or path:match '^%.%./'
+          or path:match '/'
+        )
+      then
+        return
+      end
+      local key = ('%s:%s:%s'):format(path, start_line, end_line or start_line)
+      if not seen[key] then
+        seen[key] = true
+        table.insert(refs, {
+          reference = token,
+          path = path,
+          start_line = tonumber(start_line),
+          end_line = tonumber(end_line or start_line),
+        })
+      end
+    end
+  end
+
   local function collect(candidate)
     for raw in candidate:gmatch '@[^%s]+#L%d+%-?L?%d*' do
-      local token = raw:gsub('[%.,;:%)%]%}]+$', '')
-      local path, start_line, end_line = token:match '^@(.+)#L(%d+)%-L?(%d+)$'
-      if not path then
-        path, start_line = token:match '^@(.+)#L(%d+)$'
-        end_line = start_line
-      end
-
-      if path and start_line then
-        local key = ('%s:%s:%s'):format(path, start_line, end_line or start_line)
-        if not seen[key] then
-          seen[key] = true
-          table.insert(refs, {
-            reference = token,
-            path = path,
-            start_line = tonumber(start_line),
-            end_line = tonumber(end_line or start_line),
-          })
-        end
-      end
+      collect_token(raw)
+    end
+    for raw in candidate:gmatch '[%w%._~/%-][^%s]*#L%d+%-?L?%d*' do
+      collect_token(raw)
     end
   end
 

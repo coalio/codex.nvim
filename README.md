@@ -9,7 +9,7 @@ The result is a terminal-first workflow with IDE context. Visual selections are 
 - Terminal UI backed by a local App Server WebSocket transport.
 - The terminal pane opens immediately; App Server startup and TUI connection happen asynchronously.
 - Visual/range `:CodexSend` without a second prompt; no-argument sends insert an `@file#Lx-Ly` reference into the Codex prompt and leave the user in control.
-- Submit-time hidden source injection through `thread/inject_items` for visible `@file#Lx-Ly` prompt references.
+- Submit-time hidden source injection through `thread/inject_items` for visible `@file#Lx-Ly` or `file#Lx-Ly` prompt references.
 - Active-buffer context on Neovim-originated prompts.
 - App Server thread tracking, so explicit sends use the active terminal thread after the TUI connects.
 - App Server approvals for commands, file changes, user-input requests, and MCP elicitations.
@@ -115,7 +115,7 @@ The selection is sent without asking for another prompt. With no command argumen
 @analytics/report_exports.py#L697-L703
 ```
 
-The inserted reference remains editable text in the Codex prompt. When the prompt is submitted, codex.nvim parses the visible `@file#Lx-Ly` references and injects the referenced source into the App Server thread before Codex receives the turn. Removing a reference before submitting also removes its hidden source injection. Supplying text after the command submits that text with the same compact selection reference:
+The inserted reference remains editable text in the Codex prompt. When the prompt is submitted, codex.nvim parses visible line references such as `@file#Lx-Ly` and `file#Lx-Ly`, then injects the referenced source into the App Server thread before Codex receives the turn. Removing a reference before submitting also removes its hidden source injection. Supplying text after the command submits that text with the same compact selection reference:
 
 ```vim
 :'<,'>CodexSend Explain this code and suggest a refactor
