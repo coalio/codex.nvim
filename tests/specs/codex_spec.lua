@@ -208,6 +208,45 @@ describe('codex.nvim', function()
     assert(captured_opts.active_description:match 'codex%-active%-context%.lua', 'active description should refer to the original buffer')
   end)
 
+  it('keeps editor focus when inserting a visual selection reference', function()
+    require('codex').setup {
+      backend = 'app_server',
+      cmd = 'echo',
+      autoinstall = false,
+      app_server = { ui = 'terminal' },
+    }
+
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-focus-source.lua')
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'alpha', 'beta' })
+    vim.api.nvim_buf_set_option(0, 'modified', false)
+    local original_win = vim.api.nvim_get_current_win()
+    local original_buf = vim.api.nvim_get_current_buf()
+
+    local app_server = require 'codex.app_server'
+    app_server.start = function(callback)
+      callback(true)
+    end
+    app_server.send = function() end
+
+    require('codex').send('', {
+      submit = false,
+      selection = {
+        filePath = '/tmp/codex-focus-source.lua',
+        text = 'alpha',
+        selection = {
+          isEmpty = false,
+          start = { line = 0, character = 0 },
+          ['end'] = { line = 0, character = 5 },
+        },
+      },
+    })
+
+    eq(original_win, vim.api.nvim_get_current_win())
+    eq(original_buf, vim.api.nvim_get_current_buf())
+    assert(require('codex.state').win and vim.api.nvim_win_is_valid(require('codex.state').win), 'Codex window should still be opened')
+  end)
+
   it('opens the terminal TUI against a remote app-server', function()
     local original_fn = vim.fn
     local received_cmd

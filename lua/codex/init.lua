@@ -150,9 +150,10 @@ end
 
 function M.send(prompt, opts)
   local send_opts = capture_send_opts(opts)
+  local preserve_focus = config.backend == 'app_server' and config.app_server.ui == 'terminal' and send_opts.submit == false
 
   if config.backend == 'app_server' and config.app_server.ui == 'terminal' then
-    terminal.open_placeholder()
+    terminal.open_placeholder({ focus = not preserve_focus })
   end
 
   ensure_cli(function(ok)

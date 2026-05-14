@@ -92,6 +92,20 @@ local function open_panel(config)
   state.win = win
 end
 
+local function current_win()
+  local ok, win = pcall(vim.api.nvim_get_current_win)
+  if ok then
+    return win
+  end
+  return nil
+end
+
+local function restore_win(win)
+  if win and vim.api.nvim_win_is_valid(win) then
+    vim.api.nvim_set_current_win(win)
+  end
+end
+
 local function is_buf_reusable(buf)
   return type(buf) == 'number' and vim.api.nvim_buf_is_valid(buf)
 end
@@ -203,16 +217,18 @@ function M.flush_pending()
   end, 300)
 end
 
-function M.open()
+function M.open(opts)
+  opts = opts or {}
   local config = M.config
   M.requested = true
+  local restore_to = opts.focus == false and current_win() or nil
 
   local check_cmd = util.executable_from_cmd(config.cmd)
   if check_cmd and vim.fn.executable(check_cmd) == 0 then
     if config.autoinstall then
       installer.prompt_autoinstall(function(success)
         if success then
-          M.open()
+          M.open(opts)
         else
           if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
             state.buf = create_clean_buf(config)
@@ -228,6 +244,7 @@ function M.open()
           else
             open_window(config)
           end
+          restore_win(restore_to)
         end
       end)
       return
@@ -247,12 +264,14 @@ function M.open()
     else
       open_window(config)
     end
+    restore_win(restore_to)
     return
   end
 
   ensure_window(config)
 
   if state.job then
+    restore_win(restore_to)
     return
   end
 
@@ -311,9 +330,11 @@ function M.open()
       set_message { 'Codex terminal failed to start.', tostring(job_or_err) }
     end
   end
+
+  restore_win(restore_to)
 end
 
-function M.open_remote(url, thread_id)
+function M.open_remote(url, thread_id, opts)
   if not M.requested then
     return false
   end
@@ -321,7 +342,7 @@ function M.open_remote(url, thread_id)
     url = url,
     thread_id = thread_id,
   }
-  M.open()
+  M.open(opts)
   return true
 end
 
@@ -338,7 +359,7 @@ function M.send(prompt, opts)
 
   table.insert(M.pending_submits, text)
   if M.remote and M.remote.url then
-    M.open()
+    M.open(opts)
   end
   return true
 end
@@ -356,14 +377,17 @@ function M.insert(prompt, opts)
 
   table.insert(M.pending_inserts, text)
   if M.remote and M.remote.url then
-    M.open()
+    M.open(opts)
   end
   return true
 end
 
-function M.open_placeholder()
+function M.open_placeholder(opts)
+  opts = opts or {}
+  local restore_to = opts.focus == false and current_win() or nil
   M.requested = true
   ensure_window(M.config)
+  restore_win(restore_to)
 end
 
 function M.show_error(message)

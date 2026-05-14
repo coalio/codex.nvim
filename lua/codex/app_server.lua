@@ -559,8 +559,8 @@ function M.send(prompt, opts)
     if terminal_ui() then
       if opts.submit == false then
         queue_selection_injection(opts)
-        terminal.insert(prompt, opts)
-        M.open_terminal()
+        terminal.insert(prompt, vim.tbl_extend('force', opts, { focus = false }))
+        M.open_terminal({ focus = false })
       elseif state.app.thread_id then
         local input = build_input(prompt, opts)
         dispatch_turn(input)
@@ -612,14 +612,15 @@ function M.add_file(path, start_line, end_line)
   return true
 end
 
-function M.open_terminal()
+function M.open_terminal(opts)
+  opts = opts or {}
   if not terminal_ui() or not M.config.app_server.open_terminal then
     return
   end
   if not state.app.listen_url then
     return
   end
-  if terminal.open_remote(state.app.listen_url) then
+  if terminal.open_remote(state.app.listen_url, nil, opts) then
     state.app.terminal_opened = true
   end
 end
