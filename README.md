@@ -74,7 +74,7 @@ return {
   opts = {
     backend = 'app_server',
     panel = true,
-    width = 0.33,
+    width = 0.25,
     track_selection = true,
     app_server = {
       ui = 'terminal',
@@ -136,7 +136,7 @@ require('codex').setup({
   model = nil,
   autoinstall = true,
   panel = false,
-  width = 0.33,
+  width = 0.25,
   height = 0.8,
   border = 'single',
   track_selection = true,

@@ -45,8 +45,8 @@ describe('codex.nvim', function()
     assert(cmds['CodexMcp'], 'CodexMcp command not found')
   end)
 
-  it('defaults panel width to one third of the editor', function()
-    eq(0.33, require('codex.config').defaults.width)
+  it('defaults panel width to one quarter of the editor', function()
+    eq(0.25, require('codex.config').defaults.width)
   end)
 
   it('opens a floating terminal window', function()
@@ -328,7 +328,7 @@ describe('codex.nvim', function()
       model = 'gpt-test',
       autoinstall = false,
       keymaps = {},
-      width = 0.33,
+      width = 0.25,
       height = 0.8,
       border = 'single',
       panel = false,
@@ -365,7 +365,7 @@ describe('codex.nvim', function()
       cmd = 'codex',
       autoinstall = false,
       keymaps = {},
-      width = 0.33,
+      width = 0.25,
       height = 0.8,
       border = 'single',
       panel = true,
