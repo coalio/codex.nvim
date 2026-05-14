@@ -9,6 +9,7 @@ local M = {
     listen_url = nil,
     port = nil,
     thread_id = nil,
+    session_id = nil,
     active_turn_id = nil,
     running = false,
     initialized = false,

@@ -75,8 +75,8 @@ local function build_input(prompt, opts)
     text = text
       .. ('\n\nSelected lines from %s:%d-%d:\n```text\n%s\n```'):format(name, start_line + 1, end_line + 1, sel.text or '')
   elseif M.config.include_active_buffer_context then
-    local active = editor.active()
-    local description = editor.describe(active)
+    local active = opts.active_context or editor.active()
+    local description = opts.active_description or editor.describe(active)
     if active and description then
       table.insert(pending, {
         type = 'mention',
@@ -147,10 +147,13 @@ local function on_notification(msg)
     state.app.running = false
     state.app.active_turn_id = nil
   elseif method == 'thread/started' then
-    state.app.thread_id = params.thread and params.thread.id or state.app.thread_id
+    local thread = params.thread or {}
+    state.app.thread_id = thread.id or state.app.thread_id
+    state.app.session_id = thread.sessionId or state.app.session_id
   elseif method == 'thread/closed' then
     if params.threadId == state.app.thread_id then
       state.app.thread_id = nil
+      state.app.session_id = nil
       state.app.active_turn_id = nil
       state.app.running = false
     end
@@ -225,7 +228,9 @@ local function start_thread(callback)
       callback(false, err)
       return
     end
-    state.app.thread_id = result and result.thread and result.thread.id or nil
+    local thread = result and result.thread or {}
+    state.app.thread_id = thread.id
+    state.app.session_id = thread.sessionId or thread.id
     if not state.app.thread_id then
       callback(false, { message = 'thread/start did not return a thread id' })
       return
@@ -248,6 +253,7 @@ local function connect_ws_client(listen_url, callback)
         state.app.client = nil
         state.app.initialized = false
         state.app.thread_id = nil
+        state.app.session_id = nil
         state.app.active_turn_id = nil
         state.app.running = false
         M.starting = false
@@ -303,7 +309,11 @@ local function start_websocket(callback)
 
         state.app.client:notify('initialized', {})
         state.app.initialized = true
-        start_thread(callback)
+        if terminal_ui() then
+          callback(true)
+        else
+          start_thread(callback)
+        end
       end)
     end)
   end)
@@ -319,7 +329,9 @@ function M.start(callback)
   callback = callback or function() end
 
   if state.app.client and state.app.client:is_running() and state.app.initialized then
-    if state.app.thread_id then
+    if terminal_ui() then
+      callback(true)
+    elseif state.app.thread_id then
       callback(true)
     else
       start_thread(callback)
@@ -353,6 +365,7 @@ function M.start(callback)
       state.app.client = nil
       state.app.initialized = false
       state.app.thread_id = nil
+      state.app.session_id = nil
       state.app.active_turn_id = nil
       state.app.running = false
       M.starting = false
@@ -405,6 +418,7 @@ function M.stop()
   state.app.port = nil
   state.app.initialized = false
   state.app.thread_id = nil
+  state.app.session_id = nil
   state.app.active_turn_id = nil
   state.app.running = false
   state.app.terminal_opened = false
@@ -412,6 +426,7 @@ end
 
 function M.new_thread(callback)
   state.app.thread_id = nil
+  state.app.session_id = nil
   state.app.active_turn_id = nil
   state.app.running = false
   state.app.items = {}
@@ -419,6 +434,10 @@ function M.new_thread(callback)
     ui.clear()
   end
   M.start(function(ok, err)
+    if ok and terminal_ui() then
+      terminal.send('/new')
+      M.open_terminal()
+    end
     if callback then
       callback(ok, err)
     end
@@ -439,40 +458,50 @@ function M.send(prompt, opts)
       return
     end
 
-    local input, display_context = build_input(prompt, opts)
-    if terminal_ui() then
-      M.open_terminal()
-    else
-      ui.render_user_input(prompt, display_context)
-    end
+    local function dispatch_turn(input)
+      if state.app.running and state.app.active_turn_id then
+        state.app.client:request('turn/steer', {
+          threadId = state.app.thread_id,
+          input = input,
+          expectedTurnId = state.app.active_turn_id,
+        }, function(req_err)
+          if req_err then
+            logger.error('turn/steer failed:', req_err.message or util.text_content(req_err))
+          end
+        end)
+        return
+      end
 
-    if state.app.running and state.app.active_turn_id then
-      state.app.client:request('turn/steer', {
+      state.app.client:request('turn/start', {
         threadId = state.app.thread_id,
         input = input,
-        expectedTurnId = state.app.active_turn_id,
-      }, function(req_err)
+        cwd = util.cwd(),
+        model = M.config.model,
+      }, function(req_err, result)
         if req_err then
-          logger.error('turn/steer failed:', req_err.message or util.text_content(req_err))
+          state.app.running = false
+          logger.error('turn/start failed:', req_err.message or util.text_content(req_err))
+          return
         end
+        state.app.running = true
+        state.app.active_turn_id = result and result.turn and result.turn.id or state.app.active_turn_id
       end)
+    end
+
+    if terminal_ui() then
+      if state.app.thread_id then
+        local input = build_input(prompt, opts)
+        dispatch_turn(input)
+      else
+        terminal.send(prompt, opts)
+        M.open_terminal()
+      end
       return
     end
 
-    state.app.client:request('turn/start', {
-      threadId = state.app.thread_id,
-      input = input,
-      cwd = util.cwd(),
-      model = M.config.model,
-    }, function(req_err, result)
-      if req_err then
-        state.app.running = false
-        logger.error('turn/start failed:', req_err.message or util.text_content(req_err))
-        return
-      end
-      state.app.running = true
-      state.app.active_turn_id = result and result.turn and result.turn.id or state.app.active_turn_id
-    end)
+    local input, display_context = build_input(prompt, opts)
+    ui.render_user_input(prompt, display_context)
+    dispatch_turn(input)
   end)
 end
 
@@ -518,8 +547,9 @@ function M.open_terminal()
   if not state.app.listen_url then
     return
   end
-  terminal.open_remote(state.app.listen_url, state.app.thread_id)
-  state.app.terminal_opened = true
+  if terminal.open_remote(state.app.listen_url) then
+    state.app.terminal_opened = true
+  end
 end
 
 function M.add_selection(sel)

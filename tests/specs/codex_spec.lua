@@ -11,6 +11,7 @@ describe('codex.nvim', function()
       'codex.app_server',
       'codex.commands',
       'codex.config',
+      'codex.prompt',
       'codex.selection',
       'codex.state',
       'codex.terminal',
@@ -111,6 +112,7 @@ describe('codex.nvim', function()
     -- Reload module fresh
     package.loaded['codex'] = nil
     package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
     package.loaded['codex.terminal'] = nil
     local codex = require 'codex'
 
@@ -167,7 +169,45 @@ describe('codex.nvim', function()
     vim.ui.input = original_input
   end)
 
-  it('opens the terminal TUI against a remote app-server thread', function()
+  it('captures active-buffer context before opening the terminal pane', function()
+    require('codex').setup {
+      backend = 'app_server',
+      cmd = 'echo',
+      autoinstall = false,
+      app_server = { ui = 'terminal' },
+    }
+
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-active-context.lua')
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'local value = 1' })
+    vim.api.nvim_buf_set_option(0, 'modified', false)
+
+    local app_server = require 'codex.app_server'
+    local terminal = require 'codex.terminal'
+    local captured_opts
+
+    terminal.open_placeholder = function()
+      vim.cmd 'enew!'
+      vim.api.nvim_buf_set_option(0, 'filetype', 'codex')
+    end
+    terminal.is_requested = function()
+      return true
+    end
+    app_server.start = function(callback)
+      callback(true)
+    end
+    app_server.send = function(_, opts)
+      captured_opts = opts
+    end
+
+    require('codex').send('Explain this file')
+
+    assert(captured_opts and captured_opts.active_context, 'active context should be captured before terminal focus changes')
+    eq('/tmp/codex-active-context.lua', captured_opts.active_context.path)
+    assert(captured_opts.active_description:match 'codex%-active%-context%.lua', 'active description should refer to the original buffer')
+  end)
+
+  it('opens the terminal TUI against a remote app-server', function()
     local original_fn = vim.fn
     local received_cmd
 
@@ -187,6 +227,7 @@ describe('codex.nvim', function()
     }, { __index = original_fn })
 
     package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
     package.loaded['codex.terminal'] = nil
     local terminal = require 'codex.terminal'
     terminal.setup {
@@ -201,14 +242,120 @@ describe('codex.nvim', function()
       use_buffer = false,
     }
 
+    terminal.open_placeholder()
     terminal.open_remote('ws://127.0.0.1:45555', 'thread-123')
 
     assert(received_cmd, 'termopen should be called')
     eq('codex', received_cmd[1])
-    eq('resume', received_cmd[2])
+    eq('--remote', received_cmd[2])
     assert(vim.tbl_contains(received_cmd, '--remote'), 'remote flag missing')
     assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
-    assert(vim.tbl_contains(received_cmd, 'thread-123'), 'thread id missing')
+    assert(not vim.tbl_contains(received_cmd, 'resume'), 'remote TUI should not use resume')
+    assert(not vim.tbl_contains(received_cmd, 'thread-123'), 'remote TUI should not resume app-server thread ids')
+
+    vim.fn = original_fn
+  end)
+
+  it('queues selected text as the initial remote terminal prompt', function()
+    local original_fn = vim.fn
+    local received_cmd
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd, opts)
+        received_cmd = cmd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 654
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.8,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+      include_active_buffer_context = false,
+    }
+
+    terminal.open_placeholder()
+    terminal.send('Use selected context', {
+      selection = {
+        filePath = '/tmp/example.lua',
+        text = 'print("hi")',
+        selection = {
+          isEmpty = false,
+          start = { line = 4, character = 0 },
+          ['end'] = { line = 4, character = 11 },
+        },
+      },
+    })
+    terminal.open_remote('ws://127.0.0.1:45555')
+
+    assert(received_cmd, 'termopen should be called')
+    local initial_prompt = received_cmd[#received_cmd]
+    assert(initial_prompt:match 'Use selected context', 'initial prompt should include the requested prompt')
+    assert(initial_prompt:match 'Selected lines from /tmp/example.lua:5%-5', 'initial prompt should include the selected range')
+    assert(initial_prompt:match 'print%("hi"%)', 'initial prompt should include selected text')
+
+    vim.fn = original_fn
+  end)
+
+  it('does not reuse a dirty buffer for terminal startup', function()
+    local original_fn = vim.fn
+    local old_buf = vim.api.nvim_create_buf(false, false)
+    local start_buf
+    vim.api.nvim_buf_set_lines(old_buf, 0, -1, false, { 'stale exited terminal output' })
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(_, opts)
+        start_buf = vim.api.nvim_get_current_buf()
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 789
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
+    local state = require 'codex.state'
+    local terminal = require 'codex.terminal'
+    state.buf = old_buf
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.8,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder()
+    terminal.open_remote('ws://127.0.0.1:45555', 'session-123')
+
+    assert(start_buf and start_buf ~= old_buf, 'terminal should start in a fresh buffer')
+    assert(not vim.api.nvim_buf_get_option(start_buf, 'modified'), 'terminal start buffer should be unmodified')
 
     vim.fn = original_fn
   end)

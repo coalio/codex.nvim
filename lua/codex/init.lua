@@ -1,6 +1,7 @@
 local app_server = require 'codex.app_server'
 local commands = require 'codex.commands'
 local config_module = require 'codex.config'
+local editor = require 'codex.editor'
 local installer = require 'codex.installer'
 local logger = require 'codex.logger'
 local selection = require 'codex.selection'
@@ -36,6 +37,16 @@ local function ensure_cli(callback)
   end
 
   installer.prompt_autoinstall(callback)
+end
+
+local function capture_send_opts(opts)
+  local send_opts = opts and vim.deepcopy(opts) or {}
+  if not send_opts.selection and config.include_active_buffer_context then
+    local active = editor.active()
+    send_opts.active_context = active
+    send_opts.active_description = editor.describe(active)
+  end
+  return send_opts
 end
 
 function M.setup(user_config)
@@ -79,12 +90,21 @@ function M.open()
     return
   end
 
+  if config.app_server.ui == 'terminal' then
+    terminal.open_placeholder()
+  end
+
   ensure_cli(function(ok)
     if ok then
       if config.app_server.ui == 'terminal' then
-        app_server.start(function(start_ok)
+        app_server.start(function(start_ok, err)
+          if not terminal.is_requested() then
+            return
+          end
           if start_ok then
             app_server.open_terminal()
+          else
+            terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
           end
         end)
       else
@@ -129,19 +149,29 @@ function M.toggle()
 end
 
 function M.send(prompt, opts)
+  local send_opts = capture_send_opts(opts)
+
+  if config.backend == 'app_server' and config.app_server.ui == 'terminal' then
+    terminal.open_placeholder()
+  end
+
   ensure_cli(function(ok)
     if ok then
       if config.app_server.ui == 'terminal' then
-        app_server.start(function(start_ok)
+        app_server.start(function(start_ok, err)
+          if not terminal.is_requested() then
+            return
+          end
           if start_ok then
-            app_server.open_terminal()
-            app_server.send(prompt, opts)
+            app_server.send(prompt, send_opts)
+          else
+            terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
           end
         end)
         return
       end
       ui.open()
-      app_server.send(prompt, opts)
+      app_server.send(prompt, send_opts)
     end
   end)
 end
@@ -193,6 +223,7 @@ function M._reset_for_tests()
     server_job = nil,
     listen_url = nil,
     port = nil,
+    session_id = nil,
     terminal_opened = false,
     pending_context = {},
     models = {},
