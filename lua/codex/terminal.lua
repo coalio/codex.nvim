@@ -255,6 +255,7 @@ function M.open(opts)
   M.requested = true
   local restore_to = opts.focus == false and current_win() or nil
 
+  config.cmd = util.resolve_cmd(config.cmd)
   local check_cmd = util.executable_from_cmd(config.cmd)
   if check_cmd and vim.fn.executable(check_cmd) == 0 then
     if config.autoinstall then

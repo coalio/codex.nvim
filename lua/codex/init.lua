@@ -24,8 +24,10 @@ M.version = {
 local config = config_module.defaults
 
 local function ensure_cli(callback)
-  local check_cmd = util.executable_from_cmd(config.cmd)
+  local resolved_cmd = util.resolve_cmd(config.cmd)
+  local check_cmd = util.executable_from_cmd(resolved_cmd)
   if not check_cmd or vim.fn.executable(check_cmd) == 1 then
+    config.cmd = resolved_cmd
     callback(true)
     return
   end
@@ -51,6 +53,7 @@ end
 
 function M.setup(user_config)
   config = config_module.apply(user_config)
+  config.cmd = util.resolve_cmd(config.cmd)
   terminal.setup(config)
   ui.setup(config)
   app_server.setup(config, M.version:string())

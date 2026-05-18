@@ -19,7 +19,7 @@ The result is a terminal-first workflow with IDE context. Visual selections are 
 ## Requirements
 
 - Neovim with LuaJIT.
-- Codex CLI on `PATH`.
+- Codex CLI available either on Neovim's `PATH` or from your login/interactive shell startup files. If your editor is launched outside a shell, codex.nvim asks your configured shell to resolve bare commands like `codex` before starting jobs.
 
 Install Codex with npm:
 
@@ -132,7 +132,7 @@ Normal-mode prompts include the active file path, cursor position, filetype, dir
 ```lua
 require('codex').setup({
   backend = 'app_server',
-  cmd = 'codex',
+  cmd = 'codex', -- or an absolute path / command list if you do not want shell resolution
   model = nil,
   autoinstall = true,
   panel = false,

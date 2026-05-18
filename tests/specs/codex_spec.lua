@@ -16,6 +16,7 @@ describe('codex.nvim', function()
       'codex.state',
       'codex.terminal',
       'codex.ui',
+      'codex.util',
     } do
       package.loaded[module] = nil
     end
@@ -142,6 +143,89 @@ describe('codex.nvim', function()
     assert(vim.tbl_contains(received_cmd, 'o3-mini'), 'should include specified model name')
 
     -- Restore original
+    vim.fn = original_fn
+  end)
+
+  it('resolves bare commands through the user shell when Neovim PATH does not contain them', function()
+    local original_fn = vim.fn
+    local shell_checked = false
+
+    vim.fn = setmetatable({
+      executable = function(path)
+        if path == 'codex' then
+          return 0
+        end
+        if path == '/opt/tools/codex' then
+          return 1
+        end
+        return original_fn.executable(path)
+      end,
+      systemlist = function()
+        shell_checked = true
+        return { '__CODEX_NVIM_EXEC__/opt/tools/codex' }
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.util'] = nil
+    local resolved = require('codex.util').resolve_cmd { 'codex', '--remote', 'ws://127.0.0.1:45555' }
+
+    assert(shell_checked, 'shell command lookup should be attempted')
+    eq('/opt/tools/codex', resolved[1])
+    eq('--remote', resolved[2])
+    eq('ws://127.0.0.1:45555', resolved[3])
+
+    vim.fn = original_fn
+  end)
+
+  it('starts the terminal with a shell-resolved Codex executable', function()
+    local original_fn = vim.fn
+    local received_cmd
+
+    vim.fn = setmetatable({
+      executable = function(path)
+        if path == 'codex' then
+          return 0
+        end
+        if path == '/opt/tools/codex' then
+          return 1
+        end
+        return original_fn.executable(path)
+      end,
+      systemlist = function()
+        return { '__CODEX_NVIM_EXEC__/opt/tools/codex' }
+      end,
+      termopen = function(cmd, opts)
+        received_cmd = cmd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 124
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    package.loaded['codex.util'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.8,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open()
+
+    assert(received_cmd, 'termopen should be called')
+    eq('/opt/tools/codex', received_cmd[1])
+
     vim.fn = original_fn
   end)
 

@@ -1,14 +1,25 @@
 -- lua/codex/installer.lua
 local state = require 'codex.state'
+local util = require 'codex.util'
 local M = {}
 M.__test_ignore_path_check = false -- used in tests to skip path checks
 
 local install_cmds = {
-  npm = 'npm install -g @openai/codex',
-  pnpm = 'pnpm add -g @openai/codex',
-  yarn = 'yarn global add @openai/codex',
-  bun = 'bun add -g @openai/codex',
-  deno = [[deno install --global --allow-all -f --name codex npm:@openai/codex]],
+  npm = function(executable)
+    return vim.fn.shellescape(executable) .. ' install -g @openai/codex'
+  end,
+  pnpm = function(executable)
+    return vim.fn.shellescape(executable) .. ' add -g @openai/codex'
+  end,
+  yarn = function(executable)
+    return vim.fn.shellescape(executable) .. ' global add @openai/codex'
+  end,
+  bun = function(executable)
+    return vim.fn.shellescape(executable) .. ' add -g @openai/codex'
+  end,
+  deno = function(executable)
+    return vim.fn.shellescape(executable) .. ' install --global --allow-all -f --name codex npm:@openai/codex'
+  end,
 }
 
 local fallback_instructions = {
@@ -51,21 +62,22 @@ function M.detect_available_package_managers()
   local available = {}
 
   for _, pm in ipairs(pm_list) do
-    if vim.fn.executable(pm) == 1 then
+    if util.command_available(pm) then
       table.insert(available, pm)
     end
   end
 
   -- corepack enables yarn/pnpm shims
-  if vim.fn.executable 'corepack' == 1 then
-    if vim.fn.executable 'pnpm' == 0 then
-      os.execute 'corepack enable pnpm'
+  local corepack = util.resolve_executable 'corepack'
+  if corepack then
+    if not util.command_available 'pnpm' then
+      os.execute(vim.fn.shellescape(corepack) .. ' enable pnpm')
     end
-    if vim.fn.executable 'yarn' == 0 then
-      os.execute 'corepack enable yarn'
+    if not util.command_available 'yarn' then
+      os.execute(vim.fn.shellescape(corepack) .. ' enable yarn')
     end
     for _, pm in ipairs { 'pnpm', 'yarn' } do
-      if vim.fn.executable(pm) == 1 and not vim.tbl_contains(available, pm) then
+      if util.command_available(pm) and not vim.tbl_contains(available, pm) then
         table.insert(available, pm)
       end
     end
@@ -103,11 +115,14 @@ end
 ---@param pm string selected package manager
 ---@param on_success function callback when install completes successfully
 function M.run_install(pm, on_success)
-  local cmd_str = install_cmds[pm]
-  if not cmd_str then
+  local install_cmd = install_cmds[pm]
+  if not install_cmd then
     vim.notify('[codex.nvim] Unsupported package manager: ' .. pm, vim.log.levels.ERROR)
     return
   end
+
+  local executable = util.resolve_executable(pm) or pm
+  local cmd_str = install_cmd(executable)
 
   M.open_install_float()
 
@@ -116,7 +131,7 @@ function M.run_install(pm, on_success)
     on_exit = function(_, code)
       if code == 0 then
         vim.notify('[codex.nvim] codex CLI installed successfully via ' .. pm, vim.log.levels.INFO)
-        if not M.__test_ignore_path_check and vim.fn.executable 'codex' == 0 then
+        if not M.__test_ignore_path_check and not util.command_available 'codex' then
           local fallback = fallback_instructions[pm]
           if fallback then
             vim.notify('[codex.nvim] CLI not yet available on PATH.\n' .. fallback, vim.log.levels.WARN)
