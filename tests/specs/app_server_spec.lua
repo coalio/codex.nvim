@@ -64,7 +64,7 @@ describe('codex app-server support', function()
     vim.fn = setmetatable({
       jobstart = function(cmd, opts)
         local job = 101 + #starts
-        table.insert(starts, { cmd = cmd, cwd = opts.cwd, job = job })
+        table.insert(starts, { cmd = cmd, cwd = opts.cwd, env = opts.env, job = job })
         exits[job] = opts.on_exit
         return job
       end,
@@ -97,6 +97,9 @@ describe('codex app-server support', function()
     eq(2, #starts)
     eq(first_dir, starts[1].cwd)
     eq(second_dir, starts[2].cwd)
+    local expected_env = require('codex.util').codex_env()
+    eq(expected_env.EDITOR, starts[1].env.EDITOR)
+    eq(expected_env.VISUAL, starts[1].env.VISUAL)
     eq(1, #stopped)
     eq(101, stopped[1])
     eq(second_dir, state.app.cwd)

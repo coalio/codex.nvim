@@ -451,6 +451,7 @@ function M.start(callback)
   client = jsonrpc.new {
     cmd = build_cmd(M.config),
     cwd = cwd,
+    env = util.codex_env(),
     on_notification = on_notification,
     on_request = on_request,
     on_stderr = function(line)

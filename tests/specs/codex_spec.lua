@@ -50,6 +50,22 @@ describe('codex.nvim', function()
     eq(0.25, require('codex.config').defaults.width)
   end)
 
+  it('defaults Codex launch editor environment to nvim', function()
+    local original_editor = vim.env.EDITOR
+    local original_visual = vim.env.VISUAL
+    vim.env.EDITOR = nil
+    vim.env.VISUAL = nil
+
+    package.loaded['codex.util'] = nil
+    local env = require('codex.util').codex_env()
+
+    eq('nvim', env.EDITOR)
+    eq('nvim', env.VISUAL)
+
+    vim.env.EDITOR = original_editor
+    vim.env.VISUAL = original_visual
+  end)
+
   it('opens a floating terminal window', function()
     require('codex').setup { backend = 'terminal', cmd = { 'echo', 'test' } }
     require('codex').open()
@@ -342,6 +358,7 @@ describe('codex.nvim', function()
   it('opens the terminal TUI against a remote app-server', function()
     local original_fn = vim.fn
     local received_cmd
+    local received_opts
 
     vim.fn = setmetatable({
       executable = function()
@@ -349,6 +366,7 @@ describe('codex.nvim', function()
       end,
       termopen = function(cmd, opts)
         received_cmd = cmd
+        received_opts = opts
         if type(opts.on_exit) == 'function' then
           vim.defer_fn(function()
             opts.on_exit(0)
@@ -382,6 +400,12 @@ describe('codex.nvim', function()
     eq('--remote', received_cmd[2])
     assert(vim.tbl_contains(received_cmd, '--remote'), 'remote flag missing')
     assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
+    assert(vim.tbl_contains(received_cmd, '--cd'), 'remote TUI should receive an explicit cwd')
+    eq(vim.fn.getcwd(), received_cmd[#received_cmd])
+    eq(vim.fn.getcwd(), received_opts.cwd)
+    local expected_env = require('codex.util').codex_env()
+    eq(expected_env.EDITOR, received_opts.env.EDITOR)
+    eq(expected_env.VISUAL, received_opts.env.VISUAL)
     assert(not vim.tbl_contains(received_cmd, 'resume'), 'remote TUI should not use resume')
     assert(not vim.tbl_contains(received_cmd, 'thread-123'), 'remote TUI should not resume app-server thread ids')
 
@@ -429,6 +453,8 @@ describe('codex.nvim', function()
     assert(vim.tbl_contains(received_cmd, '--remote'), 'resume should connect to the remote app-server')
     assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
     assert(vim.tbl_contains(received_cmd, 'gpt-test'), 'configured model should be forwarded to resume')
+    assert(vim.tbl_contains(received_cmd, '--cd'), 'resume should be scoped to the Neovim cwd')
+    eq(vim.fn.getcwd(), received_cmd[#received_cmd])
 
     vim.fn = original_fn
   end)
@@ -463,6 +489,181 @@ describe('codex.nvim', function()
     assert(pos[2] > 0, 'Codex panel should be on the right side')
     assert(vim.api.nvim_win_get_height(codex_win) > bottom_height, 'Codex panel should span the full editor height')
     assert(vim.api.nvim_win_get_width(codex_win) <= math.ceil(vim.o.columns * 0.4), 'Codex panel should not consume half the editor')
+  end)
+
+  it('keeps terminal windows wrapped to prevent horizontal side scrolling', function()
+    local original_fn = vim.fn
+    local source_win = vim.api.nvim_get_current_win()
+    local source_wrap = vim.api.nvim_win_get_option(source_win, 'wrap')
+    local source_sidescrolloff = vim.api.nvim_win_get_option(source_win, 'sidescrolloff')
+
+    vim.api.nvim_win_set_option(source_win, 'wrap', false)
+    vim.api.nvim_win_set_option(source_win, 'sidescrolloff', 12)
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function()
+        local win = vim.api.nvim_get_current_win()
+        vim.api.nvim_win_set_option(win, 'wrap', false)
+        vim.api.nvim_win_set_option(win, 'sidescrolloff', 12)
+        return 987
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder()
+    local codex_win = require('codex.state').win
+    assert(vim.api.nvim_win_get_option(codex_win, 'wrap'), 'Codex terminal placeholder should wrap')
+    eq(0, vim.api.nvim_win_get_option(codex_win, 'sidescrolloff'))
+
+    terminal.open_remote('ws://127.0.0.1:45555')
+
+    assert(vim.api.nvim_win_get_option(codex_win, 'wrap'), 'Codex terminal should wrap after termopen')
+    eq(0, vim.api.nvim_win_get_option(codex_win, 'sidescrolloff'))
+
+    vim.fn = original_fn
+    if vim.api.nvim_win_is_valid(source_win) then
+      vim.api.nvim_win_set_option(source_win, 'wrap', source_wrap)
+      vim.api.nvim_win_set_option(source_win, 'sidescrolloff', source_sidescrolloff)
+    end
+  end)
+
+  it('auto-scrolls the terminal after new data when unfocused near the bottom', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    local terminal = require 'codex.terminal'
+    terminal.__test_autoscroll_delay_ms = 10
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder({ focus = false })
+    local state = require 'codex.state'
+    local lines = {}
+    for i = 1, 40 do
+      table.insert(lines, 'line ' .. i)
+    end
+    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 40
+    end, 10)
+
+    vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { 'line 41' })
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 41
+    end, 10)
+
+    eq(41, vim.api.nvim_win_get_cursor(state.win)[1])
+  end)
+
+  it('does not auto-scroll the terminal while it remains focused', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    local source_win = vim.api.nvim_get_current_win()
+    local terminal = require 'codex.terminal'
+    terminal.__test_autoscroll_delay_ms = 10
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder()
+    local state = require 'codex.state'
+    local lines = {}
+    for i = 1, 40 do
+      table.insert(lines, 'line ' .. i)
+    end
+    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+    vim.api.nvim_win_set_cursor(state.win, { 40, 0 })
+
+    vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { 'line 41' })
+    vim.wait(50)
+
+    eq(state.win, vim.api.nvim_get_current_win())
+    eq(40, vim.api.nvim_win_get_cursor(state.win)[1])
+
+    vim.api.nvim_set_current_win(source_win)
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 41
+    end, 10)
+
+    eq(41, vim.api.nvim_win_get_cursor(state.win)[1])
+  end)
+
+  it('does not auto-scroll the terminal when it is far from the bottom', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    local terminal = require 'codex.terminal'
+    terminal.__test_autoscroll_delay_ms = 10
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder({ focus = false })
+    local state = require 'codex.state'
+    local lines = {}
+    for i = 1, 80 do
+      table.insert(lines, 'line ' .. i)
+    end
+    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 80
+    end, 10)
+
+    vim.api.nvim_win_set_cursor(state.win, { 1, 0 })
+    vim.api.nvim_win_call(state.win, function()
+      vim.cmd 'normal! zt'
+    end)
+    vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { 'line 81' })
+    vim.wait(50)
+
+    assert(vim.api.nvim_win_get_cursor(state.win)[1] < 81, 'Codex window should not jump to the bottom')
   end)
 
   it('inserts selected file references into the remote terminal prompt', function()
@@ -516,7 +717,7 @@ describe('codex.nvim', function()
     terminal.open_remote('ws://127.0.0.1:45555')
 
     assert(received_cmd, 'termopen should be called')
-    eq(3, #received_cmd)
+    assert(vim.tbl_contains(received_cmd, '--cd'), 'remote TUI should receive an explicit cwd')
     assert(not vim.tbl_contains(received_cmd, 'print("hi")'), 'remote command should not receive selected source text')
     vim.wait(1000, function()
       return #sent > 0

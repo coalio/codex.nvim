@@ -6,13 +6,55 @@ local util = require 'codex.util'
 local M = {
   config = nil,
   remote = nil,
+  cwd = nil,
   requested = false,
   pending_submits = {},
   pending_inserts = {},
 }
 
+local auto_scroll_delay_ms = 5000
+local autoscroll = {
+  attached_buf = nil,
+  line_count = nil,
+  pending = false,
+  timer = nil,
+}
+local attach_autoscroll
+
 function M.setup(config)
   M.config = config
+
+  local group = vim.api.nvim_create_augroup('CodexTerminalAutoscroll', { clear = true })
+  vim.api.nvim_create_autocmd('WinLeave', {
+    group = group,
+    callback = function(args)
+      if state.buf and args.buf == state.buf and state.win and vim.api.nvim_win_is_valid(state.win) then
+        M.schedule_autoscroll(true, true)
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ 'WinEnter', 'BufEnter', 'TermEnter' }, {
+    group = group,
+    callback = function()
+      if state.win and vim.api.nvim_win_is_valid(state.win) and vim.api.nvim_get_current_win() == state.win then
+        M.cancel_autoscroll()
+      end
+    end,
+  })
+end
+
+local function configure_terminal_window(win, cwd)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  pcall(vim.api.nvim_win_set_option, win, 'wrap', true)
+  pcall(vim.api.nvim_win_set_option, win, 'sidescrolloff', 0)
+  if cwd and cwd ~= '' then
+    pcall(vim.api.nvim_win_call, win, function()
+      vim.cmd('lcd ' .. vim.fn.fnameescape(cwd))
+    end)
+  end
 end
 
 local function create_clean_buf(config)
@@ -32,10 +74,14 @@ local function create_clean_buf(config)
     silent = true,
   })
 
+  if attach_autoscroll then
+    attach_autoscroll(buf)
+  end
+
   return buf
 end
 
-local function open_window(config)
+local function open_window(config, cwd)
   local width = math.floor(vim.o.columns * config.width)
   local height = math.floor(vim.o.lines * config.height)
   local row = math.floor((vim.o.lines - height) / 2)
@@ -86,14 +132,16 @@ local function open_window(config)
     style = 'minimal',
     border = border,
   })
+  configure_terminal_window(state.win, cwd)
 end
 
-local function open_panel(config)
+local function open_panel(config, cwd)
   vim.cmd 'botright vertical split'
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, state.buf)
   vim.api.nvim_win_set_width(win, math.floor(vim.o.columns * config.width))
   state.win = win
+  configure_terminal_window(state.win, cwd)
 end
 
 local function current_win()
@@ -102,6 +150,169 @@ local function current_win()
     return win
   end
   return nil
+end
+
+local function codex_focused()
+  return state.win and vim.api.nvim_win_is_valid(state.win) and current_win() == state.win
+end
+
+local function visible_bottom_line(win)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return nil
+  end
+
+  local ok, line = pcall(vim.api.nvim_win_call, win, function()
+    return vim.fn.line 'w$'
+  end)
+  if not ok then
+    return nil
+  end
+  return tonumber(line)
+end
+
+local function near_bottom(win, line_count)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return false
+  end
+  if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+    return false
+  end
+
+  local last_visible = visible_bottom_line(win)
+  if not last_visible then
+    return false
+  end
+
+  line_count = line_count or vim.api.nvim_buf_line_count(state.buf)
+  local page_distance = math.max(1, vim.api.nvim_win_get_height(win))
+  return math.max(0, line_count - last_visible) <= page_distance
+end
+
+local function scroll_to_bottom()
+  if codex_focused() then
+    return false
+  end
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    return false
+  end
+  if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+    return false
+  end
+
+  local line_count = math.max(1, vim.api.nvim_buf_line_count(state.buf))
+  pcall(vim.api.nvim_win_set_cursor, state.win, { line_count, 0 })
+  pcall(vim.api.nvim_win_call, state.win, function()
+    vim.cmd 'normal! zb'
+  end)
+  autoscroll.pending = false
+  return true
+end
+
+function M.cancel_autoscroll()
+  if autoscroll.timer then
+    autoscroll.timer:stop()
+    autoscroll.timer:close()
+    autoscroll.timer = nil
+  end
+end
+
+function M.schedule_autoscroll(check_current_position, allow_current_focus)
+  if not autoscroll.pending or (codex_focused() and not allow_current_focus) then
+    M.cancel_autoscroll()
+    return
+  end
+
+  if check_current_position and not near_bottom(state.win) then
+    autoscroll.pending = false
+    M.cancel_autoscroll()
+    return
+  end
+
+  if autoscroll.timer then
+    return
+  end
+
+  M.cancel_autoscroll()
+  local timer = vim.loop.new_timer()
+  autoscroll.timer = timer
+  timer:start(M.__test_autoscroll_delay_ms or auto_scroll_delay_ms, 0, vim.schedule_wrap(function()
+    if autoscroll.timer == timer then
+      autoscroll.timer = nil
+    end
+    timer:stop()
+    timer:close()
+
+    if not autoscroll.pending then
+      return
+    end
+    if codex_focused() then
+      return
+    end
+    scroll_to_bottom()
+  end))
+end
+
+local function on_terminal_lines(before_line_count)
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    return
+  end
+
+  if near_bottom(state.win, before_line_count) then
+    autoscroll.pending = true
+    if codex_focused() then
+      M.cancel_autoscroll()
+    else
+      M.schedule_autoscroll(false)
+    end
+  else
+    autoscroll.pending = false
+    M.cancel_autoscroll()
+  end
+end
+
+attach_autoscroll = function(buf)
+  if autoscroll.attached_buf == buf then
+    return
+  end
+
+  autoscroll.attached_buf = buf
+  autoscroll.line_count = vim.api.nvim_buf_line_count(buf)
+  autoscroll.pending = false
+  M.cancel_autoscroll()
+
+  pcall(vim.api.nvim_buf_attach, buf, false, {
+    on_lines = function(_, changed_buf, _, _, lastline, new_lastline)
+      if changed_buf ~= state.buf then
+        return
+      end
+
+      local before_line_count = autoscroll.line_count or 1
+      autoscroll.line_count = math.max(1, before_line_count + (new_lastline - lastline))
+      vim.schedule(function()
+        if changed_buf == state.buf then
+          on_terminal_lines(before_line_count)
+        end
+      end)
+    end,
+    on_detach = function(_, detached_buf)
+      if autoscroll.attached_buf == detached_buf then
+        autoscroll.attached_buf = nil
+        autoscroll.line_count = nil
+        autoscroll.pending = false
+        M.cancel_autoscroll()
+      end
+    end,
+  })
+end
+
+local function launch_cwd(opts)
+  if opts and opts.cwd then
+    return opts.cwd
+  end
+  if M.cwd and (state.job or (state.win and vim.api.nvim_win_is_valid(state.win))) then
+    return M.cwd
+  end
+  return util.cwd()
 end
 
 local function restore_win(win)
@@ -148,25 +359,26 @@ local function ensure_start_buf(config)
   end
 end
 
-local function ensure_window(config)
+local function ensure_window(config, cwd)
   ensure_start_buf(config)
 
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_set_current_win(state.win)
     vim.api.nvim_win_set_buf(state.win, state.buf)
+    configure_terminal_window(state.win, cwd)
     return
   end
 
   if config.panel then
-    open_panel(config)
+    open_panel(config, cwd)
   else
-    open_window(config)
+    open_window(config, cwd)
   end
 end
 
 local function set_message(lines)
   local config = M.config
-  ensure_window(config)
+  ensure_window(config, M.cwd)
   local was_modifiable = vim.api.nvim_buf_get_option(state.buf, 'modifiable')
   vim.api.nvim_buf_set_option(state.buf, 'modifiable', true)
   vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines or { '' })
@@ -174,7 +386,14 @@ local function set_message(lines)
   vim.api.nvim_buf_set_option(state.buf, 'modifiable', was_modifiable)
 end
 
-local function build_cmd_args(config, remote, opts)
+local function append_cwd_arg(cmd_args, cwd)
+  if cwd and cwd ~= '' then
+    table.insert(cmd_args, '--cd')
+    table.insert(cmd_args, cwd)
+  end
+end
+
+local function build_cmd_args(config, remote, opts, cwd)
   opts = opts or {}
   local cmd_args = util.normalize_cmd(config.cmd)
   if remote and remote.url then
@@ -187,10 +406,12 @@ local function build_cmd_args(config, remote, opts)
         table.insert(cmd_args, '-m')
         table.insert(cmd_args, config.model)
       end
+      append_cwd_arg(cmd_args, cwd)
       return cmd_args
     else
       table.insert(cmd_args, '--remote')
       table.insert(cmd_args, remote.url)
+      append_cwd_arg(cmd_args, cwd)
       return cmd_args
     end
   end
@@ -203,6 +424,7 @@ local function build_cmd_args(config, remote, opts)
     table.insert(cmd_args, '-m')
     table.insert(cmd_args, config.model)
   end
+  append_cwd_arg(cmd_args, cwd)
   return cmd_args
 end
 
@@ -252,6 +474,8 @@ end
 function M.open(opts)
   opts = opts or {}
   local config = M.config
+  local cwd = launch_cwd(opts)
+  M.cwd = cwd
   M.requested = true
   local restore_to = opts.focus == false and current_win() or nil
 
@@ -273,9 +497,9 @@ function M.open(opts)
             '  npm install -g @openai/codex',
           })
           if config.panel then
-            open_panel(config)
+            open_panel(config, cwd)
           else
-            open_window(config)
+            open_window(config, cwd)
           end
           restore_win(restore_to)
         end
@@ -293,15 +517,15 @@ function M.open(opts)
       '  npm install -g @openai/codex',
     })
     if config.panel then
-      open_panel(config)
+      open_panel(config, cwd)
     else
-      open_window(config)
+      open_window(config, cwd)
     end
     restore_win(restore_to)
     return
   end
 
-  ensure_window(config)
+  ensure_window(config, cwd)
 
   if state.job then
     if opts.insert then
@@ -311,11 +535,12 @@ function M.open(opts)
     return
   end
 
-  local cmd_args = build_cmd_args(config, M.remote, opts)
+  local cmd_args = build_cmd_args(config, M.remote, opts, cwd)
 
   if config.use_buffer then
     state.job = vim.fn.jobstart(cmd_args, {
-      cwd = util.cwd(),
+      cwd = cwd,
+      env = util.codex_env(),
       stdout_buffered = true,
       on_stdout = function(_, data)
         if not data then
@@ -344,7 +569,8 @@ function M.open(opts)
     })
   else
     local ok, job_or_err = pcall(vim.fn.termopen, cmd_args, {
-      cwd = util.cwd(),
+      cwd = cwd,
+      env = util.codex_env(),
       on_exit = function(_, code)
         state.job = nil
         state.app.terminal_opened = false
@@ -359,6 +585,7 @@ function M.open(opts)
     })
     if ok and type(job_or_err) == 'number' and job_or_err > 0 then
       state.job = job_or_err
+      configure_terminal_window(state.win, cwd)
       M.flush_pending()
       if opts.insert then
         focus_window(true)
@@ -483,9 +710,11 @@ end
 
 function M.open_placeholder(opts)
   opts = opts or {}
+  local cwd = opts.cwd or util.cwd()
+  M.cwd = cwd
   local restore_to = opts.focus == false and current_win() or nil
   M.requested = true
-  ensure_window(M.config)
+  ensure_window(M.config, cwd)
   if opts.insert then
     focus_window(true)
   end
@@ -503,7 +732,7 @@ end
 
 function M.show_error(message)
   M.requested = true
-  ensure_window(M.config)
+  ensure_window(M.config, M.cwd)
   set_message { 'Codex failed to start.', tostring(message or 'unknown error') }
 end
 
@@ -519,6 +748,9 @@ function M.close()
     vim.api.nvim_win_close(state.win, true)
   end
   state.win = nil
+  if not state.job then
+    M.cwd = nil
+  end
 end
 
 function M.toggle()

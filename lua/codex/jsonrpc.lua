@@ -8,6 +8,7 @@ function Client.new(opts)
   return setmetatable({
     cmd = opts.cmd,
     cwd = opts.cwd,
+    env = opts.env,
     on_notification = opts.on_notification,
     on_request = opts.on_request,
     on_exit = opts.on_exit,
@@ -26,6 +27,7 @@ function Client:start()
 
   local job = vim.fn.jobstart(self.cmd, {
     cwd = self.cwd,
+    env = self.env,
     stdout_buffered = false,
     stderr_buffered = false,
     on_stdout = function(_, data)
