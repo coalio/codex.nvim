@@ -315,7 +315,7 @@ function M.open(opts)
 
   if config.use_buffer then
     state.job = vim.fn.jobstart(cmd_args, {
-      cwd = vim.loop.cwd(),
+      cwd = util.cwd(),
       stdout_buffered = true,
       on_stdout = function(_, data)
         if not data then
@@ -344,7 +344,7 @@ function M.open(opts)
     })
   else
     local ok, job_or_err = pcall(vim.fn.termopen, cmd_args, {
-      cwd = vim.loop.cwd(),
+      cwd = util.cwd(),
       on_exit = function(_, code)
         state.job = nil
         state.app.terminal_opened = false

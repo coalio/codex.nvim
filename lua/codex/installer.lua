@@ -127,7 +127,7 @@ function M.run_install(pm, on_success)
   M.open_install_float()
 
   state.job = vim.fn.termopen(cmd_str, {
-    cwd = vim.loop.cwd(),
+    cwd = util.cwd(),
     on_exit = function(_, code)
       if code == 0 then
         vim.notify('[codex.nvim] codex CLI installed successfully via ' .. pm, vim.log.levels.INFO)

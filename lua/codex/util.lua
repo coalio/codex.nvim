@@ -129,11 +129,16 @@ function M.command_available(executable)
 end
 
 function M.cwd()
-  local cwd = vim.loop.cwd()
+  local ok, cwd = pcall(vim.fn.getcwd)
+  if ok and cwd and cwd ~= '' then
+    return cwd
+  end
+
+  cwd = vim.loop.cwd()
   if cwd and cwd ~= '' then
     return cwd
   end
-  return vim.fn.getcwd()
+  return nil
 end
 
 function M.relative_path(path)

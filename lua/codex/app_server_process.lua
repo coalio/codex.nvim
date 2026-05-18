@@ -42,9 +42,15 @@ end
 
 function M.start(config, callback)
   callback = callback or function() end
+  local cwd = util.cwd()
+
   if state.app.server_job and state.app.listen_url then
-    callback(true, state.app.listen_url)
-    return
+    if state.app.cwd == cwd then
+      callback(true, state.app.listen_url)
+      return
+    end
+
+    M.stop()
   end
 
   local range = config.app_server.port_range or { min = 45000, max = 45999 }
@@ -56,8 +62,9 @@ function M.start(config, callback)
 
   local listen_url = ('ws://127.0.0.1:%d'):format(port)
   local cmd = build_cmd(config, listen_url)
-  local job = vim.fn.jobstart(cmd, {
-    cwd = util.cwd(),
+  local job
+  job = vim.fn.jobstart(cmd, {
+    cwd = cwd,
     stdout_buffered = false,
     stderr_buffered = false,
     on_stdout = function(_, data)
@@ -74,10 +81,15 @@ function M.start(config, callback)
         end
       end
     end,
-    on_exit = function(_, code)
+    on_exit = function(exit_job, code)
+      if state.app.server_job ~= exit_job and state.app.server_job ~= job then
+        return
+      end
+
       state.app.server_job = nil
       state.app.listen_url = nil
       state.app.port = nil
+      state.app.cwd = nil
       logger.debug('app-server websocket exited with code', tostring(code))
     end,
   })
@@ -90,6 +102,7 @@ function M.start(config, callback)
   state.app.server_job = job
   state.app.listen_url = listen_url
   state.app.port = port
+  state.app.cwd = cwd
   callback(true, listen_url)
 end
 
@@ -100,6 +113,7 @@ function M.stop()
   state.app.server_job = nil
   state.app.listen_url = nil
   state.app.port = nil
+  state.app.cwd = nil
 end
 
 return M

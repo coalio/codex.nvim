@@ -8,6 +8,7 @@ local M = {
     server_job = nil,
     listen_url = nil,
     port = nil,
+    cwd = nil,
     thread_id = nil,
     session_id = nil,
     active_turn_id = nil,

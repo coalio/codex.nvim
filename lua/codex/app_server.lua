@@ -324,11 +324,16 @@ local function connect_ws_client(listen_url, callback)
 
   local function attempt()
     attempts = attempts + 1
-    local client = ws_rpc.new {
+    local client
+    client = ws_rpc.new {
       url = listen_url,
       on_notification = on_notification,
       on_request = on_request,
       on_exit = function()
+        if state.app.client ~= client then
+          return
+        end
+
         state.app.client = nil
         state.app.initialized = false
         state.app.thread_id = nil
@@ -408,6 +413,11 @@ end
 
 function M.start(callback)
   callback = callback or function() end
+  local cwd = util.cwd()
+
+  if state.app.cwd and state.app.cwd ~= cwd then
+    M.stop()
+  end
 
   if state.app.client and state.app.client:is_running() and state.app.initialized then
     if terminal_ui() then
@@ -428,26 +438,35 @@ function M.start(callback)
 
   if terminal_ui() then
     start_websocket(function(ok, err)
+      if state.app.cwd ~= cwd then
+        return
+      end
       M.starting = false
       flush_ready(ok, err)
     end)
     return
   end
 
-  local client = jsonrpc.new {
+  local client
+  client = jsonrpc.new {
     cmd = build_cmd(M.config),
-    cwd = util.cwd(),
+    cwd = cwd,
     on_notification = on_notification,
     on_request = on_request,
     on_stderr = function(line)
       logger.debug(line)
     end,
     on_exit = function(code)
+      if state.app.client ~= client then
+        return
+      end
+
       state.app.client = nil
       state.app.initialized = false
       state.app.thread_id = nil
       state.app.session_id = nil
       state.app.active_turn_id = nil
+      state.app.cwd = nil
       state.app.running = false
       state.app.pending_sends = {}
       state.app.pending_injections = {}
@@ -457,8 +476,10 @@ function M.start(callback)
   }
 
   state.app.client = client
+  state.app.cwd = cwd
   local ok, err = client:start()
   if not ok then
+    state.app.cwd = nil
     M.starting = false
     flush_ready(false, err)
     return
@@ -474,6 +495,10 @@ function M.start(callback)
       experimentalApi = M.config.app_server.experimental == true,
     },
   }, function(init_err)
+    if state.app.cwd ~= cwd then
+      return
+    end
+
     if init_err then
       M.starting = false
       flush_ready(false, init_err)
@@ -484,6 +509,9 @@ function M.start(callback)
     state.app.initialized = true
 
     start_thread(function(thread_ok, thread_err)
+      if state.app.cwd ~= cwd then
+        return
+      end
       M.starting = false
       flush_ready(thread_ok, thread_err)
     end)
@@ -499,6 +527,7 @@ function M.stop()
   state.app.server_job = nil
   state.app.listen_url = nil
   state.app.port = nil
+  state.app.cwd = nil
   state.app.initialized = false
   state.app.thread_id = nil
   state.app.session_id = nil
@@ -507,6 +536,8 @@ function M.stop()
   state.app.terminal_opened = false
   state.app.pending_sends = {}
   state.app.pending_injections = {}
+  M.starting = false
+  M.ready_callbacks = {}
 end
 
 function M.new_thread(callback)
