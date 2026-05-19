@@ -469,6 +469,7 @@ describe('codex.nvim', function()
     local next_job = 700
     local exits = {}
     local sent = {}
+    local mouse_line = 3
     local function listed_empty_buffers()
       local count = 0
       for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
@@ -496,6 +497,9 @@ describe('codex.nvim', function()
       chansend = function(job, text)
         sent[job] = (sent[job] or '') .. text
         return #text
+      end,
+      getmousepos = function()
+        return { winid = require('codex.state').picker_win, line = mouse_line }
       end,
     }, { __index = original_fn })
 
@@ -533,11 +537,14 @@ describe('codex.nvim', function()
     assert(state.picker_win and vim.api.nvim_win_is_valid(state.picker_win), 'session picker should be visible')
     local picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
     eq(empty_buffers_before, listed_empty_buffers())
-    eq(' Codex Sessions', picker_lines[1])
-    assert(picker_lines[3]:match '^  [%w%-]+ %(1%)$', 'first session should have a named label')
-    assert(picker_lines[4]:match '^  [%w%-]+ %(2%)$', 'second session should have a named label')
+    eq('Codex Sessions', picker_lines[1])
+    assert(picker_lines[3]:match '^[%w%-]+ %(1%)$', 'first session should have a named label')
+    assert(picker_lines[4]:match '^[%w%-]+ %(2%)$', 'second session should have a named label')
     eq(1, state.picker_line_sessions[3])
     eq(2, state.picker_line_sessions[4])
+    assert(#picker_lines[3] <= vim.api.nvim_win_get_width(state.picker_win), 'session label should fit picker width')
+    eq(false, vim.api.nvim_win_get_option(state.picker_win, 'wrap'))
+    eq(0, vim.api.nvim_win_get_option(state.picker_win, 'sidescrolloff'))
 
     local picker_ns = vim.api.nvim_get_namespaces()['codex.session_picker']
     local marks = vim.api.nvim_buf_get_extmarks(state.picker_buf, picker_ns, 0, -1, { details = true })
@@ -545,11 +552,26 @@ describe('codex.nvim', function()
     for _, mark in ipairs(marks) do
       local row = mark[2]
       local details = mark[4] or {}
-      if row == 3 and details.hl_group == 'CodexSessionActive' then
+      if row == 3 and (details.hl_group == 'CodexSessionActive' or details.line_hl_group == 'CodexSessionActive') then
         active_highlight_seen = true
       end
     end
     assert(active_highlight_seen, 'active session label should be highlighted')
+
+    vim.api.nvim_set_current_win(state.picker_win)
+    mouse_line = 3
+    terminal.select_session_at_mouse()
+    eq(1, state.active_session_id)
+    eq(state.picker_win, vim.api.nvim_get_current_win())
+    mouse_line = 4
+    terminal.select_session_at_mouse()
+    eq(2, state.active_session_id)
+    eq(state.picker_win, vim.api.nvim_get_current_win())
+
+    local picker_view = vim.api.nvim_win_call(state.picker_win, function()
+      return vim.fn.winsaveview()
+    end)
+    eq(0, picker_view.leftcol)
 
     terminal.select_session(1, { focus = false })
     eq(1, state.active_session_id)
