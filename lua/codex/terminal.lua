@@ -974,7 +974,10 @@ function M.open_remote(url, thread_id, opts)
   else
     M.remote = remote
   end
-  M.open(vim.tbl_extend('force', opts, { session = session }))
+  M.open(vim.tbl_extend('force', opts, {
+    new_session = false,
+    session = session,
+  }))
   return true
 end
 

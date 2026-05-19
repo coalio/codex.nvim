@@ -98,36 +98,46 @@ function M.setup(user_config)
   end
 end
 
+local function open_app_server_terminal(opts)
+  opts = opts or {}
+  terminal.open_placeholder(opts)
+  local terminal_opts = vim.tbl_extend('force', opts, {
+    new_session = false,
+    session = state.active_session and state.active_session() or nil,
+  })
+
+  ensure_cli(function(ok)
+    if ok then
+      app_server.start(function(start_ok, err)
+        if not terminal.is_requested(terminal_opts.session) then
+          return
+        end
+        if start_ok then
+          app_server.open_terminal(terminal_opts)
+        else
+          terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
+        end
+      end)
+    end
+  end)
+end
+
 function M.open(opts)
   opts = opts or {}
-  local terminal_opts = opts
   if config.backend == 'terminal' then
     terminal.open(opts)
     return
   end
 
   if config.app_server.ui == 'terminal' then
-    terminal.open_placeholder(opts)
-    terminal_opts = vim.tbl_extend('force', opts, { session = state.active_session and state.active_session() or nil })
+    open_app_server_terminal(opts)
+    return
   end
 
   ensure_cli(function(ok)
     if ok then
-      if config.app_server.ui == 'terminal' then
-        app_server.start(function(start_ok, err)
-          if not terminal.is_requested(terminal_opts.session) then
-            return
-          end
-          if start_ok then
-            app_server.open_terminal(terminal_opts)
-          else
-            terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
-          end
-        end)
-      else
-        ui.open()
-        app_server.start()
-      end
+      ui.open()
+      app_server.start()
     end
   end)
 end
@@ -243,8 +253,12 @@ function M.session(target, opts)
 end
 
 function M.new_session(opts)
-  if config.backend == 'terminal' or config.app_server.ui == 'terminal' then
+  opts = vim.tbl_extend('force', opts or {}, { new_session = true, insert = true })
+  if config.backend == 'terminal' then
     return terminal.new_session(opts)
+  end
+  if config.app_server.ui == 'terminal' then
+    return open_app_server_terminal(opts)
   end
   logger.warn 'Multiple Codex sessions are only supported by the terminal Codex UI'
   return false

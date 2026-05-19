@@ -466,12 +466,14 @@ describe('codex.nvim', function()
 
   it('keeps \\ac on the app-server terminal path when no session exists', function()
     local original_fn = vim.fn
+    local received_cmds = {}
     vim.fn = setmetatable({
       executable = function()
         return 1
       end,
-      termopen = function()
-        error '\\ac should not start a raw terminal job directly'
+      termopen = function(cmd)
+        table.insert(received_cmds, cmd)
+        return 850 + #received_cmds
       end,
     }, { __index = original_fn })
 
@@ -506,29 +508,29 @@ describe('codex.nvim', function()
     }
 
     local app_server = require 'codex.app_server'
-    local opened_opts
+    local state = require 'codex.state'
     app_server.start = function(callback)
+      state.app.listen_url = 'ws://127.0.0.1:45555'
       callback(true)
-    end
-    app_server.open_terminal = function(opts)
-      opened_opts = opts
     end
 
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('\\ac', true, false, true), 'mx', false)
     vim.wait(500, function()
-      return opened_opts ~= nil
+      return #received_cmds == 1
     end, 10)
 
-    local state = require 'codex.state'
+    eq(1, #received_cmds)
     eq(1, #state.session_order)
-    assert(opened_opts and opened_opts.session == state.sessions[state.active_session_id], '\\ac should pass the placeholder session to app-server open_terminal')
+    assert(vim.tbl_contains(received_cmds[1], '--remote'), '\\ac should open a remote app-server TUI')
+    assert(vim.tbl_contains(received_cmds[1], 'ws://127.0.0.1:45555'), '\\ac should use the app-server listen URL')
+    assert(not vim.tbl_contains(received_cmds[1], '--dangerously-bypass-approvals-and-sandbox'), '\\ac should not enable YOLO mode')
     assert(state.win and vim.api.nvim_win_is_valid(state.win), '\\ac should open the terminal pane')
 
     codex.close()
     vim.fn = original_fn
   end)
 
-  it('maps \\an through the same single-session opener as YOLO', function()
+  it('maps \\an and YOLO through the app-server remote session opener', function()
     local original_fn = vim.fn
     local received_cmds = {}
     local function listed_empty_buffers()
@@ -588,15 +590,23 @@ describe('codex.nvim', function()
       },
     }
 
+    local app_server = require 'codex.app_server'
+    local state = require 'codex.state'
+    app_server.start = function(callback)
+      state.app.listen_url = 'ws://127.0.0.1:45555'
+      callback(true)
+    end
+
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('\\an', true, false, true), 'mx', false)
     vim.wait(500, function()
       return #received_cmds == 1
     end, 10)
 
-    local state = require 'codex.state'
     eq(1, #received_cmds)
     eq(1, #state.session_order)
     eq(empty_buffers_before, listed_empty_buffers())
+    assert(vim.tbl_contains(received_cmds[1], '--remote'), '\\an should open a remote app-server TUI')
+    assert(vim.tbl_contains(received_cmds[1], 'ws://127.0.0.1:45555'), '\\an should use the app-server listen URL')
     assert(vim.tbl_contains(received_cmds[1], '--config'), '\\an session should include --config')
     assert(vim.tbl_contains(received_cmds[1], 'tui.vim_mode_default=true'), '\\an session should enable vim mode')
     assert(not vim.tbl_contains(received_cmds[1], '--dangerously-bypass-approvals-and-sandbox'), '\\an session should not enable YOLO mode')
@@ -605,6 +615,8 @@ describe('codex.nvim', function()
     eq(2, #received_cmds)
     eq(2, #state.session_order)
     eq(empty_buffers_before, listed_empty_buffers())
+    assert(vim.tbl_contains(received_cmds[2], '--remote'), 'YOLO should open a remote app-server TUI')
+    assert(vim.tbl_contains(received_cmds[2], 'ws://127.0.0.1:45555'), 'YOLO should use the app-server listen URL')
     assert(vim.tbl_contains(received_cmds[2], 'tui.vim_mode_default=true'), 'YOLO session should enable vim mode')
     assert(vim.tbl_contains(received_cmds[2], '--dangerously-bypass-approvals-and-sandbox'), 'YOLO session should include bypass flag')
 
