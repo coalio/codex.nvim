@@ -780,6 +780,7 @@ describe('codex.nvim', function()
     vim.api.nvim_set_current_win(list_win)
     local left_mouse_mapping = vim.fn.maparg('<LeftMouse>', 'n', false, true)
     assert(type(left_mouse_mapping.callback) == 'function', 'single click should be mapped for session selection')
+    eq('<Ignore>', left_mouse_mapping.callback())
     vim.api.nvim_set_current_win(source_win)
 
     assert(vim.wait(500, function()

@@ -184,7 +184,7 @@ local function apply_mouse_mapping(view)
     vim.schedule(function()
       select_at_mouse(selected_view)
     end)
-    return '<LeftMouse>'
+    return '<Ignore>'
   end, {
     buffer = buf,
     desc = 'Select Codex session',
