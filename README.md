@@ -110,7 +110,19 @@ return {
 - `:CodexReloadMcp` reloads Codex MCP server configuration.
 - `:CodexStop` stops the local App Server process.
 
-Default mappings use `<leader>a`: `<leader>ac` and `<leader>aC` toggle the pane without changing sessions, `<leader>as` sends to the selected session, `<leader>an` creates a session, and `<leader>ay` creates a YOLO session.
+## Default Mappings
+
+Mappings are configurable through `setup({ keymaps = ... })`. Omitted keys keep their defaults. Override any value with your preferred key sequence, or set it to `false` or `''` to skip installing that mapping.
+
+| Mapping | Modes | Config key | Action |
+| --- | --- | --- | --- |
+| `<leader>ac` | Normal, Terminal | `keymaps.toggle` | Toggle the Codex pane without changing the selected session. |
+| `<leader>aC` | Normal, Terminal | `keymaps.open` | Toggle the Codex pane. If sessions already exist, this does not create a new one. |
+| `<leader>as` | Normal, Visual | `keymaps.send` | Send the prompt or selected range to the currently selected session. |
+| `<leader>an` | Normal | `keymaps.session_new` | Open a new numbered Codex session. |
+| `<leader>ay` | Normal | `keymaps.yolo` | Open a new Codex session with YOLO mode. |
+| `<C-q>` | Codex terminal/buffer | `keymaps.quit` | Close the Codex pane. |
+| `<C-c>` | App Server buffer UI | `keymaps.interrupt` | Interrupt the active turn in buffer UI mode. In terminal UI mode, `<C-c>` is left to Codex itself. |
 
 ## Selection Workflow
 
@@ -178,6 +190,20 @@ require('codex').setup({
     sandbox = nil,
     enable_features = { 'apps' },
     mcp_status_detail = 'toolsAndAuthOnly',
+  },
+})
+```
+
+For example, to move the defaults under `<leader>x` and disable YOLO:
+
+```lua
+require('codex').setup({
+  keymaps = {
+    toggle = '<leader>xc',
+    open = '<leader>xC',
+    send = '<leader>xs',
+    session_new = '<leader>xn',
+    yolo = false,
   },
 })
 ```
