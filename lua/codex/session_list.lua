@@ -9,6 +9,43 @@ local M = {
 }
 
 local statuscolumn = '%@v:lua.CodexSessionListClick@%{%v:lua.CodexSessionListStatusColumn()%}%T'
+local winhighlight = table.concat({
+  'Normal:CodexSessionListBase',
+  'NormalNC:CodexSessionListBase',
+  'EndOfBuffer:CodexSessionListBase',
+  'LineNr:CodexSessionListBase',
+  'CursorLine:CodexSessionListBase',
+  'CursorLineNr:CodexSessionListBase',
+  'SignColumn:CodexSessionListBase',
+  'FoldColumn:CodexSessionListBase',
+}, ',')
+
+local function highlight_with_background(groups)
+  for _, group in ipairs(groups) do
+    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = group, link = false })
+    if ok and (hl.bg or hl.ctermbg) then
+      return group
+    end
+  end
+  return groups[#groups]
+end
+
+local function default_link(name, target)
+  pcall(vim.api.nvim_set_hl, 0, name, {
+    default = true,
+    link = target,
+  })
+end
+
+local function setup_highlights()
+  default_link('CodexSessionListBase', 'Normal')
+  default_link('CodexSessionListInactive', 'Comment')
+  default_link('CodexSessionListActive', highlight_with_background {
+    'PmenuSel',
+    'Visual',
+    'TabLineSel',
+  })
+end
 
 local function valid_win(win)
   return type(win) == 'number' and vim.api.nvim_win_is_valid(win)
@@ -144,7 +181,7 @@ local function configure_window(win, config)
   set_win_option(win, 'winfixwidth', true)
   set_win_option(win, 'winbar', '')
   set_win_option(win, 'fillchars', 'eob: ')
-  set_win_option(win, 'winhighlight', 'CursorLine:Normal,CursorLineNr:Normal')
+  set_win_option(win, 'winhighlight', winhighlight)
   pcall(vim.api.nvim_win_set_width, win, width)
 end
 
@@ -206,7 +243,12 @@ end
 
 function M.setup(config)
   M.config = config
+  setup_highlights()
   local group = vim.api.nvim_create_augroup('CodexSessionList', { clear = true })
+  vim.api.nvim_create_autocmd('ColorScheme', {
+    group = group,
+    callback = setup_highlights,
+  })
   vim.api.nvim_create_autocmd('WinEnter', {
     group = group,
     callback = function()
@@ -309,7 +351,7 @@ function M.statuscolumn()
     return ''
   end
   local id = session_id_at_line(vim.v.lnum)
-  local highlight = id == state.active_session_id and '%#TabLineSel#' or '%#TabLine#'
+  local highlight = id == state.active_session_id and '%#CodexSessionListActive#' or '%#CodexSessionListInactive#'
   return highlight .. pad_label(label, session_width(M.config)) .. '%*'
 end
 
