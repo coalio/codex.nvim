@@ -161,7 +161,7 @@ local function picker_width(config)
   if state.picker_expanded then
     return width
   end
-  return math.max(5, math.min(width, #('+ ' .. picker_title)))
+  return math.max(5, math.min(width, #('[+] ' .. picker_title)))
 end
 
 local function content_width(config)
@@ -315,7 +315,7 @@ local function render_picker()
     return
   end
 
-  local toggle = state.picker_expanded and '-' or '+'
+  local toggle = state.picker_expanded and '[-]' or '[+]'
   local lines = { align_picker_line(toggle .. ' ' .. picker_title, M.config), '' }
   state.picker_line_sessions = {}
   state.picker_line_actions = {
