@@ -469,6 +469,20 @@ describe('codex.nvim', function()
     local next_job = 700
     local exits = {}
     local sent = {}
+    local function listed_empty_buffers()
+      local count = 0
+      for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if
+          vim.api.nvim_buf_is_valid(bufnr)
+          and vim.fn.buflisted(bufnr) == 1
+          and vim.api.nvim_buf_get_name(bufnr) == ''
+          and vim.api.nvim_buf_get_option(bufnr, 'buftype') == ''
+        then
+          count = count + 1
+        end
+      end
+      return count
+    end
 
     vim.fn = setmetatable({
       executable = function()
@@ -490,6 +504,9 @@ describe('codex.nvim', function()
     package.loaded['codex.terminal'] = nil
     local state = require 'codex.state'
     local terminal = require 'codex.terminal'
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-session-source.lua')
+    local empty_buffers_before = listed_empty_buffers()
     terminal.setup {
       cmd = 'codex',
       autoinstall = false,
@@ -500,7 +517,7 @@ describe('codex.nvim', function()
       panel = true,
       use_buffer = false,
       include_active_buffer_context = false,
-      session_picker = { enabled = true, width = 2 },
+      session_picker = { enabled = true, width = 24 },
     }
 
     terminal.open({ new_session = true })
@@ -515,8 +532,24 @@ describe('codex.nvim', function()
     eq(2, state.active_session_id)
     assert(state.picker_win and vim.api.nvim_win_is_valid(state.picker_win), 'session picker should be visible')
     local picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
-    eq('1', picker_lines[1])
-    eq('2', picker_lines[2])
+    eq(empty_buffers_before, listed_empty_buffers())
+    eq(' Codex Sessions', picker_lines[1])
+    assert(picker_lines[3]:match '^  [%w%-]+ %(1%)$', 'first session should have a named label')
+    assert(picker_lines[4]:match '^  [%w%-]+ %(2%)$', 'second session should have a named label')
+    eq(1, state.picker_line_sessions[3])
+    eq(2, state.picker_line_sessions[4])
+
+    local picker_ns = vim.api.nvim_get_namespaces()['codex.session_picker']
+    local marks = vim.api.nvim_buf_get_extmarks(state.picker_buf, picker_ns, 0, -1, { details = true })
+    local active_highlight_seen = false
+    for _, mark in ipairs(marks) do
+      local row = mark[2]
+      local details = mark[4] or {}
+      if row == 3 and details.hl_group == 'CodexSessionActive' then
+        active_highlight_seen = true
+      end
+    end
+    assert(active_highlight_seen, 'active session label should be highlighted')
 
     terminal.select_session(1, { focus = false })
     eq(1, state.active_session_id)

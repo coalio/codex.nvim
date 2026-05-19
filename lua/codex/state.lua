@@ -12,12 +12,53 @@ local function new_app_context()
   }
 end
 
+local adjectives = {
+  'brave',
+  'binary',
+  'quiet',
+  'rapid',
+  'steady',
+  'clever',
+  'silver',
+  'bright',
+  'nimble',
+  'patient',
+  'cosmic',
+  'lucid',
+  'fuzzy',
+  'golden',
+  'hidden',
+  'polar',
+}
+
+local nouns = {
+  'squid',
+  'bird',
+  'comet',
+  'pixel',
+  'river',
+  'signal',
+  'vector',
+  'orbit',
+  'ember',
+  'matrix',
+  'kernel',
+  'cursor',
+  'lambda',
+  'cipher',
+  'rocket',
+  'quartz',
+}
+
+local random_seeded = false
+
 local M = {
   buf = nil,
   win = nil,
   job = nil,
   picker_buf = nil,
   picker_win = nil,
+  picker_line_sessions = {},
 
   sessions = {},
   session_order = {},
@@ -61,6 +102,26 @@ local function sort_session_order()
   table.sort(M.session_order, function(a, b)
     return a < b
   end)
+end
+
+local function session_name(id)
+  if not random_seeded then
+    local seed = os.time()
+    if vim and vim.loop and vim.loop.hrtime then
+      seed = seed + (vim.loop.hrtime() % 2147483647)
+    end
+    math.randomseed(seed)
+    random_seeded = true
+  end
+  local adjective = adjectives[math.random(#adjectives)]
+  local noun = nouns[math.random(#nouns)]
+  local candidate = adjective .. '-' .. noun
+  for _, session in pairs(M.sessions) do
+    if session.name == candidate then
+      return candidate .. '-' .. tostring(id)
+    end
+  end
+  return candidate
 end
 
 local function remove_ordered_session(id)
@@ -109,6 +170,7 @@ function M.create_session(opts)
 
   local session = {
     id = id,
+    name = opts.name or session_name(id),
     buf = nil,
     job = nil,
     cwd = nil,

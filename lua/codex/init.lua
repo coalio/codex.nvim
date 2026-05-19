@@ -333,6 +333,7 @@ function M._reset_for_tests()
   state.job = nil
   state.picker_buf = nil
   state.picker_win = nil
+  state.picker_line_sessions = {}
   state.sessions = {}
   state.session_order = {}
   state.active_session_id = nil

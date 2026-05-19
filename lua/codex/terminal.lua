@@ -13,6 +13,7 @@ local M = {
 }
 
 local auto_scroll_delay_ms = 5000
+local picker_ns = vim.api.nvim_create_namespace 'codex.session_picker'
 local autoscroll = {
   attached_buf = nil,
   line_count = nil,
@@ -154,23 +155,21 @@ end
 
 local function picker_width(config)
   local picker = config and config.session_picker or {}
-  local width = tonumber(picker.width) or 2
+  local width = tonumber(picker.width) or 24
   return math.max(1, math.floor(width))
 end
 
 local function content_width(config)
-  local width = math.floor(vim.o.columns * config.width)
-  if picker_enabled(config) then
-    width = width - picker_width(config)
-  end
-  return math.max(1, width)
+  return math.max(1, math.floor(vim.o.columns * config.width))
 end
 
 local function open_window(config, cwd)
   local width = content_width(config)
   local height = math.floor(vim.o.lines * config.height)
   local row = math.floor((vim.o.lines - height) / 2)
-  local col = math.floor((vim.o.columns - width - (picker_enabled(config) and picker_width(config) or 0)) / 2)
+  local picker_extra = picker_enabled(config) and picker_width(config) or 0
+  local col = math.floor((vim.o.columns - width - picker_extra) / 2)
+  col = math.max(0, col)
 
   local styles = {
     single = {
@@ -259,7 +258,7 @@ local function ensure_picker_buf()
     noremap = true,
     silent = true,
   })
-  vim.api.nvim_buf_set_keymap(buf, 'n', '<LeftMouse>', [[<cmd>lua require('codex.terminal').select_session_at_cursor()<CR>]], {
+  vim.api.nvim_buf_set_keymap(buf, 'n', '<LeftMouse>', [[<cmd>lua require('codex.terminal').select_session_at_mouse()<CR>]], {
     noremap = true,
     silent = true,
   })
@@ -279,6 +278,7 @@ local function configure_picker_window(win, config)
   pcall(vim.api.nvim_win_set_option, win, 'cursorline', false)
   pcall(vim.api.nvim_win_set_option, win, 'winfixwidth', true)
   pcall(vim.api.nvim_win_set_option, win, 'statuscolumn', '')
+  pcall(vim.api.nvim_win_set_option, win, 'winhighlight', 'Normal:TabLine,NormalNC:TabLine,EndOfBuffer:TabLineFill')
 end
 
 local function render_picker()
@@ -286,23 +286,26 @@ local function render_picker()
     return
   end
 
-  local lines = {}
+  local lines = { ' Codex Sessions', '' }
+  state.picker_line_sessions = {}
   for _, id in ipairs(state.session_order or {}) do
-    table.insert(lines, tostring(id))
-  end
-  if #lines == 0 then
-    lines = { '' }
+    local session = state.sessions and state.sessions[id] or nil
+    local name = session and session.name or ('session-' .. tostring(id))
+    table.insert(lines, ('  %s (%d)'):format(name, id))
+    state.picker_line_sessions[#lines] = id
   end
 
   local was_modifiable = vim.api.nvim_buf_get_option(state.picker_buf, 'modifiable')
   vim.api.nvim_buf_set_option(state.picker_buf, 'modifiable', true)
   vim.api.nvim_buf_set_lines(state.picker_buf, 0, -1, false, lines)
-  vim.api.nvim_buf_clear_namespace(state.picker_buf, -1, 0, -1)
+  vim.api.nvim_buf_clear_namespace(state.picker_buf, picker_ns, 0, -1)
+  vim.cmd 'highlight default link CodexSessionTitle TabLineFill'
   vim.cmd 'highlight default link CodexSessionActive TabLineSel'
   vim.cmd 'highlight default link CodexSessionInactive TabLine'
-  for index, id in ipairs(state.session_order or {}) do
+  vim.api.nvim_buf_add_highlight(state.picker_buf, picker_ns, 'CodexSessionTitle', 0, 0, -1)
+  for line, id in pairs(state.picker_line_sessions) do
     local group = id == state.active_session_id and 'CodexSessionActive' or 'CodexSessionInactive'
-    vim.api.nvim_buf_add_highlight(state.picker_buf, -1, group, index - 1, 0, -1)
+    vim.api.nvim_buf_add_highlight(state.picker_buf, picker_ns, group, line - 1, 0, -1)
   end
   vim.api.nvim_buf_set_option(state.picker_buf, 'modifiable', was_modifiable)
 end
@@ -345,7 +348,7 @@ local function open_panel_picker(config)
     return
   end
   vim.api.nvim_set_current_win(state.win)
-  vim.cmd(('rightbelow vertical %dnew'):format(picker_width(config)))
+  vim.cmd(('rightbelow vertical %dsplit'):format(picker_width(config)))
   state.picker_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(state.picker_win, buf)
   configure_picker_window(state.picker_win, config)
@@ -1120,8 +1123,19 @@ function M.select_session_at_cursor()
     return false
   end
   local row = vim.api.nvim_win_get_cursor(0)[1]
-  local line = vim.api.nvim_buf_get_lines(state.picker_buf, row - 1, row, false)[1]
-  local id = tonumber(line)
+  local id = state.picker_line_sessions and state.picker_line_sessions[row] or nil
+  if not id then
+    return false
+  end
+  return M.select_session(id, { focus = true })
+end
+
+function M.select_session_at_mouse()
+  local pos = vim.fn.getmousepos()
+  if not pos or pos.winid ~= state.picker_win then
+    return false
+  end
+  local id = state.picker_line_sessions and state.picker_line_sessions[pos.line] or nil
   if not id then
     return false
   end

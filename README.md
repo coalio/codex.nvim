@@ -173,7 +173,7 @@ require('codex').setup({
   },
   session_picker = {
     enabled = true,
-    width = 2,
+    width = 24,
   },
   app_server = {
     ui = 'terminal',

@@ -26,7 +26,7 @@ M.defaults = {
   selection_prompt = 'Use the selected Neovim context.',
   session_picker = {
     enabled = true,
-    width = 2,
+    width = 24,
   },
   app_server = {
     ui = 'terminal', -- terminal | buffer
