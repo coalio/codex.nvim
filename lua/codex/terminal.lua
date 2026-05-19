@@ -1,5 +1,6 @@
 local installer = require 'codex.installer'
 local prompt_builder = require 'codex.prompt'
+local session_list = require 'codex.session_list'
 local state = require 'codex.state'
 local util = require 'codex.util'
 
@@ -13,7 +14,6 @@ local M = {
 }
 
 local auto_scroll_delay_ms = 5000
-local picker_ns = vim.api.nvim_create_namespace 'codex.session_picker'
 local autoscroll = {
   attached_buf = nil,
   line_count = nil,
@@ -21,8 +21,6 @@ local autoscroll = {
   timer = nil,
 }
 local attach_autoscroll
-local picker_title = 'Codex Sessions'
-local picker_collapsed_title = '(S)'
 
 local function active_session()
   if type(state.active_session) == 'function' then
@@ -116,6 +114,7 @@ end
 
 function M.setup(config)
   M.config = config
+  session_list.setup(config)
 
   local group = vim.api.nvim_create_augroup('CodexTerminalAutoscroll', { clear = true })
   vim.api.nvim_create_autocmd('WinLeave', {
@@ -174,21 +173,6 @@ local function create_clean_buf(config)
   return buf
 end
 
-local function picker_enabled(config)
-  local picker = config and config.session_picker
-  return picker == nil or picker.enabled ~= false
-end
-
-local function picker_width(config)
-  local picker = config and config.session_picker or {}
-  local width = tonumber(picker.width) or 24
-  width = math.max(1, math.floor(width))
-  if state.picker_expanded then
-    return width
-  end
-  return math.max(5, math.min(width, #('[+] ' .. picker_collapsed_title)))
-end
-
 local function content_width(config)
   return math.max(1, math.floor(vim.o.columns * config.width))
 end
@@ -197,8 +181,7 @@ local function open_window(config, cwd)
   local width = content_width(config)
   local height = math.floor(vim.o.lines * config.height)
   local row = math.floor((vim.o.lines - height) / 2)
-  local picker_extra = picker_enabled(config) and picker_width(config) or 0
-  local col = math.floor((vim.o.columns - width - picker_extra) / 2)
+  local col = math.floor((vim.o.columns - width) / 2)
   col = math.max(0, col)
 
   local styles = {
@@ -266,257 +249,8 @@ local function current_win()
   return nil
 end
 
-local function valid_window(win)
-  return type(win) == 'number' and win > 0 and vim.api.nvim_win_is_valid(win)
-end
-
-local function alternate_win(exclude)
-  local ok, previous = pcall(vim.fn.winnr, '#')
-  if not ok or not previous or previous <= 0 then
-    return nil
-  end
-
-  local ok_id, win = pcall(vim.fn.win_getid, previous)
-  if ok_id and valid_window(win) and win ~= exclude then
-    return win
-  end
-  return nil
-end
-
-local function picker_mouse_restore_win(picker_win)
-  local win = current_win()
-  if valid_window(win) and win ~= picker_win then
-    return win
-  end
-  return alternate_win(picker_win)
-end
-
-local function focus_window_id(win)
-  if not valid_window(win) then
-    return false
-  end
-  pcall(vim.api.nvim_set_current_win, win)
-  return current_win() == win
-end
-
-local function restore_after_picker_mouse(picker_win, restore_to)
-  if focus_window_id(restore_to) then
-    return true
-  end
-  if focus_window_id(alternate_win(picker_win)) then
-    return true
-  end
-  return focus_window_id(state.win)
-end
-
-local function focus_mouse_target(pos)
-  if not pos or not valid_window(pos.winid) then
-    return false
-  end
-  return focus_window_id(pos.winid)
-end
-
-local function close_picker()
-  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
-    pcall(vim.api.nvim_win_close, state.picker_win, true)
-  end
-  state.picker_win = nil
-end
-
-local function ensure_picker_buf()
-  if state.picker_buf and vim.api.nvim_buf_is_valid(state.picker_buf) then
-    return state.picker_buf
-  end
-
-  local buf = vim.api.nvim_create_buf(false, false)
-  state.picker_buf = buf
-  vim.api.nvim_buf_set_option(buf, 'bufhidden', 'hide')
-  vim.api.nvim_buf_set_option(buf, 'swapfile', false)
-  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
-  vim.api.nvim_buf_set_option(buf, 'filetype', 'codex-sessions')
-  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
-  vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', [[<cmd>lua require('codex.terminal').select_session_at_cursor()<CR>]], {
-    noremap = true,
-    silent = true,
-  })
-  vim.api.nvim_buf_set_keymap(buf, 'n', '<LeftMouse>', [[<cmd>lua require('codex.terminal').select_session_at_mouse()<CR>]], {
-    noremap = true,
-    silent = true,
-  })
-  for _, lhs in ipairs { 'v', 'V', '<C-v>', '<LeftDrag>', '<S-LeftMouse>' } do
-    vim.api.nvim_buf_set_keymap(buf, 'n', lhs, '<Nop>', { noremap = true, silent = true })
-  end
-  for _, lhs in ipairs { '<LeftDrag>', '<S-LeftMouse>' } do
-    vim.api.nvim_buf_set_keymap(buf, 'x', lhs, '<Nop>', { noremap = true, silent = true })
-  end
-  return buf
-end
-
-local function configure_picker_window(win, config)
-  if not win or not vim.api.nvim_win_is_valid(win) then
-    return
-  end
-  pcall(vim.api.nvim_win_set_width, win, picker_width(config))
-  pcall(vim.api.nvim_win_set_option, win, 'number', false)
-  pcall(vim.api.nvim_win_set_option, win, 'relativenumber', false)
-  pcall(vim.api.nvim_win_set_option, win, 'signcolumn', 'no')
-  pcall(vim.api.nvim_win_set_option, win, 'foldcolumn', '0')
-  pcall(vim.api.nvim_win_set_option, win, 'wrap', false)
-  pcall(vim.api.nvim_win_set_option, win, 'sidescrolloff', 0)
-  pcall(vim.api.nvim_win_set_option, win, 'sidescroll', 1)
-  pcall(vim.api.nvim_win_set_option, win, 'list', false)
-  pcall(vim.api.nvim_win_set_option, win, 'cursorline', false)
-  pcall(vim.api.nvim_win_set_option, win, 'winfixwidth', true)
-  pcall(vim.api.nvim_win_set_option, win, 'statuscolumn', '')
-  pcall(vim.api.nvim_win_set_option, win, 'winhighlight', '')
-end
-
-local function resize_panel_windows(config)
-  if not config or not config.panel then
-    return
-  end
-  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
-    pcall(vim.api.nvim_win_set_width, state.picker_win, picker_width(config))
-  end
-  if state.win and vim.api.nvim_win_is_valid(state.win) then
-    pcall(vim.api.nvim_win_set_width, state.win, content_width(config))
-  end
-end
-
-local function clip_picker_text(text, width)
-  if vim.fn.strdisplaywidth(text) <= width then
-    return text
-  end
-  return text:sub(-width)
-end
-
-local function align_picker_line(text, config)
-  local width = picker_width(config)
-  text = clip_picker_text(text, width)
-  local padding = math.max(0, width - vim.fn.strdisplaywidth(text))
-  return string.rep(' ', padding) .. text
-end
-
-local function render_picker()
-  if not state.picker_buf or not vim.api.nvim_buf_is_valid(state.picker_buf) then
-    return
-  end
-
-  local toggle = state.picker_expanded and '[-]' or '[+]'
-  local title = state.picker_expanded and picker_title or picker_collapsed_title
-  local lines = { align_picker_line(toggle .. ' ' .. title, M.config), '' }
-  state.picker_line_sessions = {}
-  state.picker_line_actions = {
-    [1] = 'toggle',
-  }
-  for _, id in ipairs(state.session_order or {}) do
-    local session = state.sessions and state.sessions[id] or nil
-    local name = session and session.name or ('session-' .. tostring(id))
-    local label = state.picker_expanded and ('%s (%d)'):format(name, id) or ('(%d)'):format(id)
-    table.insert(lines, align_picker_line(' ' .. label .. ' ', M.config))
-    state.picker_line_sessions[#lines] = id
-  end
-
-  local was_modifiable = vim.api.nvim_buf_get_option(state.picker_buf, 'modifiable')
-  vim.api.nvim_buf_set_option(state.picker_buf, 'modifiable', true)
-  vim.api.nvim_buf_set_lines(state.picker_buf, 0, -1, false, lines)
-  vim.api.nvim_buf_clear_namespace(state.picker_buf, picker_ns, 0, -1)
-  vim.cmd 'highlight! link CodexSessionTitle Normal'
-  vim.cmd 'highlight! link CodexSessionActive TabLineSel'
-  vim.cmd 'highlight! link CodexSessionInactive Normal'
-  vim.api.nvim_buf_add_highlight(state.picker_buf, picker_ns, 'CodexSessionTitle', 0, 0, -1)
-  local active_line = 1
-  for line, id in pairs(state.picker_line_sessions) do
-    local group = id == state.active_session_id and 'CodexSessionActive' or 'CodexSessionInactive'
-    if id == state.active_session_id then
-      active_line = line
-      vim.api.nvim_buf_set_extmark(state.picker_buf, picker_ns, line - 1, 0, {
-        line_hl_group = group,
-      })
-    end
-    vim.api.nvim_buf_add_highlight(state.picker_buf, picker_ns, group, line - 1, 0, -1)
-  end
-  vim.api.nvim_buf_set_option(state.picker_buf, 'modifiable', was_modifiable)
-
-  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
-    pcall(vim.api.nvim_win_set_cursor, state.picker_win, { active_line, 0 })
-    pcall(vim.api.nvim_win_call, state.picker_win, function()
-      local view = vim.fn.winsaveview()
-      view.leftcol = 0
-      view.col = 0
-      vim.fn.winrestview(view)
-    end)
-  end
-end
-
-local function open_float_picker(config)
-  local buf = ensure_picker_buf()
-  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
-    vim.api.nvim_win_set_buf(state.picker_win, buf)
-    configure_picker_window(state.picker_win, config)
-    return
-  end
-
-  local ok, win_config = pcall(vim.api.nvim_win_get_config, state.win)
-  if not ok or not win_config or win_config.relative == '' then
-    return
-  end
-
-  local border_offset = config.border == 'none' and 0 or 2
-  state.picker_win = vim.api.nvim_open_win(buf, false, {
-    relative = 'editor',
-    width = picker_width(config),
-    height = win_config.height,
-    row = win_config.row,
-    col = win_config.col + win_config.width + border_offset,
-    style = 'minimal',
-  })
-  configure_picker_window(state.picker_win, config)
-end
-
-local function open_panel_picker(config)
-  local buf = ensure_picker_buf()
-  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
-    vim.api.nvim_win_set_buf(state.picker_win, buf)
-    configure_picker_window(state.picker_win, config)
-    return
-  end
-
-  local restore_to = current_win()
-  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
-    return
-  end
-  vim.api.nvim_set_current_win(state.win)
-  vim.cmd(('rightbelow vertical %dsplit'):format(picker_width(config)))
-  state.picker_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(state.picker_win, buf)
-  configure_picker_window(state.picker_win, config)
-  resize_panel_windows(config)
-  if state.win and vim.api.nvim_win_is_valid(state.win) then
-    vim.api.nvim_set_current_win(state.win)
-  end
-  if restore_to and restore_to ~= state.picker_win and vim.api.nvim_win_is_valid(restore_to) then
-    vim.api.nvim_set_current_win(restore_to)
-  end
-end
-
-local function ensure_picker(config)
-  if not picker_enabled(config) or not state.has_sessions or not state.has_sessions() then
-    close_picker()
-    return
-  end
-  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
-    close_picker()
-    return
-  end
-
-  if config.panel then
-    open_panel_picker(config)
-  else
-    open_float_picker(config)
-  end
-  render_picker()
-  resize_panel_windows(config)
+local function ensure_session_list(config, restore_win)
+  session_list.open(config, { focus = false, restore_win = restore_win })
 end
 
 local function codex_focused()
@@ -730,7 +464,8 @@ local function ensure_start_buf(config, session)
   end
 end
 
-local function ensure_window(config, cwd, session)
+local function ensure_window(config, cwd, session, opts)
+  opts = opts or {}
   session = session or active_session()
   ensure_start_buf(config, session)
   sync_active_session()
@@ -739,7 +474,7 @@ local function ensure_window(config, cwd, session)
     vim.api.nvim_set_current_win(state.win)
     vim.api.nvim_win_set_buf(state.win, state.buf)
     configure_terminal_window(state.win, cwd)
-    ensure_picker(config)
+    ensure_session_list(config, opts.restore_win)
     return
   end
 
@@ -748,7 +483,7 @@ local function ensure_window(config, cwd, session)
   else
     open_window(config, cwd)
   end
-  ensure_picker(config)
+  ensure_session_list(config, opts.restore_win)
 end
 
 local function set_message(lines)
@@ -901,7 +636,7 @@ function M.open(opts)
             'You can install manually with:',
             '  npm install -g @openai/codex',
           })
-          ensure_window(config, cwd, session)
+          ensure_window(config, cwd, session, { restore_win = restore_to })
           restore_win(restore_to)
         end
       end)
@@ -917,12 +652,12 @@ function M.open(opts)
       'Install with:',
       '  npm install -g @openai/codex',
     })
-    ensure_window(config, cwd, session)
+    ensure_window(config, cwd, session, { restore_win = restore_to })
     restore_win(restore_to)
     return
   end
 
-  ensure_window(config, cwd, session)
+  ensure_window(config, cwd, session, { restore_win = restore_to })
 
   if session_job(session) then
     if opts.insert then
@@ -1162,7 +897,7 @@ function M.open_placeholder(opts)
   end
   local restore_to = opts.focus == false and current_win() or nil
   M.requested = true
-  ensure_window(M.config, cwd, session)
+  ensure_window(M.config, cwd, session, { restore_win = restore_to })
   if opts.insert then
     focus_window(true)
   end
@@ -1210,7 +945,7 @@ function M.close()
       entry.requested = false
     end
   end
-  close_picker()
+  session_list.close()
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_close(state.win, true)
   end
@@ -1238,62 +973,15 @@ function M.select_session(id, opts)
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_set_buf(state.win, session.buf)
     configure_terminal_window(state.win, session.cwd)
-    ensure_picker(M.config)
+    ensure_session_list(M.config, opts.focus == false and current_win() or nil)
     if opts.focus ~= false then
       focus_window(opts.insert ~= false)
     end
   else
     M.open(vim.tbl_extend('force', opts, { session = session }))
   end
-  render_picker()
+  session_list.emit_changed()
   return true
-end
-
-function M.toggle_session_picker()
-  state.picker_expanded = not state.picker_expanded
-  ensure_picker(M.config)
-  render_picker()
-  return true
-end
-
-function M.select_session_at_cursor()
-  if not state.picker_buf or not vim.api.nvim_buf_is_valid(state.picker_buf) then
-    return false
-  end
-  local row = vim.api.nvim_win_get_cursor(0)[1]
-  if state.picker_line_actions and state.picker_line_actions[row] == 'toggle' then
-    return M.toggle_session_picker()
-  end
-  local id = state.picker_line_sessions and state.picker_line_sessions[row] or nil
-  if not id then
-    return false
-  end
-  return M.select_session(id, { focus = true })
-end
-
-function M.select_session_at_mouse()
-  local pos = vim.fn.getmousepos()
-  if not pos or pos.winid ~= state.picker_win then
-    return focus_mouse_target(pos)
-  end
-  local picker_win = state.picker_win
-  local restore_to = picker_mouse_restore_win(picker_win)
-  if state.picker_line_actions and state.picker_line_actions[pos.line] == 'toggle' then
-    local ok = M.toggle_session_picker()
-    if ok then
-      restore_after_picker_mouse(picker_win, restore_to)
-    end
-    return ok
-  end
-  local id = state.picker_line_sessions and state.picker_line_sessions[pos.line] or nil
-  if not id then
-    return false
-  end
-  local ok = M.select_session(id, { focus = false })
-  if ok then
-    restore_after_picker_mouse(picker_win, restore_to)
-  end
-  return ok
 end
 
 function M.new_session(opts)
@@ -1328,21 +1016,21 @@ function M.close_session(id, opts)
   if state.remove_session then
     state.remove_session(session.id)
   end
-  render_picker()
+  session_list.emit_changed()
 
   local next_session = active_session()
   if was_active and next_session and state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_set_buf(state.win, next_session.buf)
     configure_terminal_window(state.win, next_session.cwd)
-    ensure_picker(M.config)
+    ensure_session_list(M.config, current_win())
   elseif not next_session then
-    close_picker()
+    session_list.close()
     if state.win and vim.api.nvim_win_is_valid(state.win) then
       pcall(vim.api.nvim_win_close, state.win, true)
     end
     state.win = nil
   else
-    ensure_picker(M.config)
+    ensure_session_list(M.config, current_win())
   end
 
   if old_buf and vim.api.nvim_buf_is_valid(old_buf) then

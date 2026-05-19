@@ -42,3 +42,10 @@ install-deps:
 	else \
 		echo "plenary.nvim already installed."; \
 	fi
+	if [ ! -d ~/.local/share/nvim/lazy/trouble.nvim ]; then \
+		echo "Installing trouble.nvim dependency..."; \
+		mkdir -p ~/.local/share/nvim/lazy; \
+		git clone https://github.com/folke/trouble.nvim ~/.local/share/nvim/lazy/trouble.nvim || true; \
+	else \
+		echo "trouble.nvim already installed."; \
+	fi

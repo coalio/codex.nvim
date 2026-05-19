@@ -56,11 +56,6 @@ local M = {
   buf = nil,
   win = nil,
   job = nil,
-  picker_buf = nil,
-  picker_win = nil,
-  picker_line_sessions = {},
-  picker_line_actions = {},
-  picker_expanded = false,
 
   sessions = {},
   session_order = {},

@@ -1,3 +1,5 @@
+require('tests.helpers').bootstrap_trouble()
+
 local a = require 'plenary.async.tests'
 
 if vim.env.CI then

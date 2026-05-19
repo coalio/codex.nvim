@@ -1,6 +1,8 @@
 -- tests/codex_spec.lua
 -- luacheck: globals describe it assert eq
 -- luacheck: ignore a            -- “a” is imported but unused
+require('tests.helpers').bootstrap_trouble()
+
 local a = require 'plenary.async.tests'
 local eq = assert.equals
 
@@ -13,6 +15,7 @@ describe('codex.nvim', function()
       'codex.config',
       'codex.prompt',
       'codex.selection',
+      'codex.session_list',
       'codex.state',
       'codex.terminal',
       'codex.ui',
@@ -20,6 +23,9 @@ describe('codex.nvim', function()
     } do
       package.loaded[module] = nil
     end
+    pcall(function()
+      require('trouble').close { mode = 'codex_sessions' }
+    end)
     vim.cmd 'set noswapfile' -- prevent side effects
     vim.cmd 'silent! bwipeout!' -- close any open codex windows
   end)
@@ -629,8 +635,6 @@ describe('codex.nvim', function()
     local next_job = 700
     local exits = {}
     local sent = {}
-    local mouse_line = 3
-    local mouse_win = nil
     local function listed_empty_buffers()
       local count = 0
       for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
@@ -659,16 +663,52 @@ describe('codex.nvim', function()
         sent[job] = (sent[job] or '') .. text
         return #text
       end,
-      getmousepos = function()
-        return { winid = mouse_win or require('codex.state').picker_win, line = mouse_line }
-      end,
     }, { __index = original_fn })
 
     package.loaded['codex.state'] = nil
     package.loaded['codex.prompt'] = nil
+    package.loaded['codex.session_list'] = nil
     package.loaded['codex.terminal'] = nil
     local state = require 'codex.state'
     local terminal = require 'codex.terminal'
+    local session_list = require 'codex.session_list'
+    local function session_view()
+      if session_list.view and session_list.view.win and session_list.view.win.win and vim.api.nvim_win_is_valid(session_list.view.win.win) then
+        return session_list.view
+      end
+      local views = require('trouble.view').get { mode = 'codex_sessions', open = true }
+      for index = #views, 1, -1 do
+        local view = views[index].view
+        local win = view and view.win and view.win.win
+        if win and vim.api.nvim_win_is_valid(win) then
+          return view
+        end
+      end
+      return nil
+    end
+    local function session_win()
+      local view = session_view()
+      local win = view and view.win and view.win.win
+      if win and vim.api.nvim_win_is_valid(win) then
+        return win
+      end
+      return nil
+    end
+    local function session_lines()
+      local win = session_win()
+      assert(win, 'Codex session Trouble window should be open')
+      return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+    end
+    local function session_debug()
+      local win = session_win()
+      local lines = win and vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false) or nil
+      return vim.inspect {
+        win = win,
+        width = win and vim.api.nvim_win_get_width(win) or nil,
+        state_width = state.win and vim.api.nvim_win_is_valid(state.win) and vim.api.nvim_win_get_width(state.win) or nil,
+        lines = lines,
+      }
+    end
     vim.cmd 'enew'
     vim.api.nvim_buf_set_name(0, '/tmp/codex-session-source.lua')
     local source_win = vim.api.nvim_get_current_win()
@@ -683,7 +723,7 @@ describe('codex.nvim', function()
       panel = true,
       use_buffer = false,
       include_active_buffer_context = false,
-      session_picker = { enabled = true, width = 24 },
+      session_list = { width = 24 },
     }
 
     terminal.open({ new_session = true })
@@ -696,89 +736,101 @@ describe('codex.nvim', function()
 
     eq(2, #state.session_order)
     eq(2, state.active_session_id)
-    assert(state.picker_win and vim.api.nvim_win_is_valid(state.picker_win), 'session picker should be visible')
-    local picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
-    local picker_width = vim.api.nvim_win_get_width(state.picker_win)
-    eq(empty_buffers_before, listed_empty_buffers())
     local expected_tui_width = math.max(1, math.floor(vim.o.columns * 0.25))
-    eq('[+] (S)', picker_lines[1])
-    eq(7, picker_width)
+    assert(vim.wait(500, function()
+      local win = session_win()
+      if not win or vim.api.nvim_win_get_width(win) ~= 7 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
+        return false
+      end
+      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+      return lines[1] and lines[1]:match '%(1%)' and lines[2] and lines[2]:match '%(2%)'
+    end, 10), 'session list should be visible: ' .. session_debug())
+    local list_win = session_win()
+    local list_lines = session_lines()
+    local list_width = vim.api.nvim_win_get_width(list_win)
+    eq(empty_buffers_before, listed_empty_buffers())
+    eq(7, list_width)
     eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    eq(' (1) ', picker_lines[3]:sub(-5))
-    eq(' (2) ', picker_lines[4]:sub(-5))
-    assert(not picker_lines[3]:match '[%w]+%-[%w]+', 'collapsed picker should not show the first session name')
-    assert(not picker_lines[4]:match '[%w]+%-[%w]+', 'collapsed picker should not show the second session name')
-    eq(1, state.picker_line_sessions[3])
-    eq(2, state.picker_line_sessions[4])
-    eq('toggle', state.picker_line_actions[1])
-    eq(picker_width, #picker_lines[3])
-    eq(false, vim.api.nvim_win_get_option(state.picker_win, 'wrap'))
-    eq(0, vim.api.nvim_win_get_option(state.picker_win, 'sidescrolloff'))
-    eq('', vim.api.nvim_win_get_option(state.picker_win, 'winhighlight'))
+    assert(list_lines[1]:match '%(1%)', 'collapsed list should show first session id')
+    assert(list_lines[2]:match '%(2%)', 'collapsed list should show second session id')
+    assert(not list_lines[1]:match '[%w]+%-[%w]+', 'collapsed list should not show the first session name')
+    assert(not list_lines[2]:match '[%w]+%-[%w]+', 'collapsed list should not show the second session name')
+    eq(true, vim.w[list_win].codex_session_list)
+    eq('trouble', vim.api.nvim_buf_get_option(vim.api.nvim_win_get_buf(list_win), 'filetype'))
+    eq(false, vim.api.nvim_win_get_option(list_win, 'wrap'))
+    eq(0, vim.api.nvim_win_get_option(list_win, 'sidescrolloff'))
 
-    vim.api.nvim_set_current_win(state.picker_win)
-    local visual_mapping = vim.fn.maparg('v', 'n', false, true)
-    eq('<Nop>', visual_mapping.rhs)
+    vim.api.nvim_set_current_win(list_win)
+    local left_mouse_mapping = vim.fn.maparg('<LeftMouse>', 'n', false, true)
+    eq('', left_mouse_mapping.rhs or '')
     vim.api.nvim_set_current_win(source_win)
 
-    local picker_ns = vim.api.nvim_get_namespaces()['codex.session_picker']
-    local marks = vim.api.nvim_buf_get_extmarks(state.picker_buf, picker_ns, 0, -1, { details = true })
-    local active_highlight_seen = false
-    for _, mark in ipairs(marks) do
-      local row = mark[2]
-      local details = mark[4] or {}
-      if row == 3 and (details.hl_group == 'CodexSessionActive' or details.line_hl_group == 'CodexSessionActive') then
-        active_highlight_seen = true
+    assert(list_lines[2]:match '%*', 'active session should be marked')
+
+    local focus_before_toggle = vim.api.nvim_get_current_win()
+    session_list.toggle_expanded()
+    assert(vim.wait(500, function()
+      local win = session_win()
+      if not win or vim.api.nvim_win_get_width(win) ~= 24 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
+        return false
       end
-    end
-    assert(active_highlight_seen, 'active session label should be highlighted')
-
-    mouse_line = 1
-    local focus_before_picker_click = vim.api.nvim_get_current_win()
-    terminal.select_session_at_mouse()
-    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
-    picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
-    picker_width = vim.api.nvim_win_get_width(state.picker_win)
-    eq(24, picker_width)
+      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+      return lines[1] and lines[1]:match '[%w%-]+ %(1%)' and lines[2] and lines[2]:match '[%w%-]+ %(2%)'
+    end, 10), 'expanded session list should resize: ' .. session_debug())
+    eq(focus_before_toggle, vim.api.nvim_get_current_win())
+    list_win = session_win()
+    list_lines = session_lines()
+    list_width = vim.api.nvim_win_get_width(list_win)
+    eq(24, list_width)
     eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    assert(picker_lines[1]:match '%[%-%] Codex Sessions$', 'expanded picker should show a bracketed minus title')
-    assert(picker_lines[3]:match '%s[%w%-]+ %(1%) $', 'expanded picker should show the first session name')
-    assert(picker_lines[4]:match '%s[%w%-]+ %(2%) $', 'expanded picker should show the second session name')
-    eq(picker_width, #picker_lines[3])
+    assert(list_lines[1]:match '[%w%-]+ %(1%)', 'expanded list should show the first session name')
+    assert(list_lines[2]:match '[%w%-]+ %(2%)', 'expanded list should show the second session name')
 
-    mouse_line = 1
-    focus_before_picker_click = vim.api.nvim_get_current_win()
-    terminal.select_session_at_mouse()
-    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
-    picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
-    picker_width = vim.api.nvim_win_get_width(state.picker_win)
-    eq(7, picker_width)
+    focus_before_toggle = vim.api.nvim_get_current_win()
+    session_list.toggle_expanded()
+    assert(vim.wait(500, function()
+      local win = session_win()
+      if not win or vim.api.nvim_win_get_width(win) ~= 7 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
+        return false
+      end
+      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+      return lines[1] and lines[1]:match '%(1%)'
+    end, 10), 'collapsed session list should resize: ' .. session_debug())
+    eq(focus_before_toggle, vim.api.nvim_get_current_win())
+    list_win = session_win()
+    list_lines = session_lines()
+    list_width = vim.api.nvim_win_get_width(list_win)
+    eq(7, list_width)
     eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    eq('[+] (S)', picker_lines[1])
-    eq(' (1) ', picker_lines[3]:sub(-5))
+    assert(list_lines[1]:match '%(1%)', 'collapsed list should keep first session id')
 
-    mouse_line = 3
-    focus_before_picker_click = vim.api.nvim_get_current_win()
-    terminal.select_session_at_mouse()
+    list_win = session_win()
+    vim.api.nvim_set_current_win(list_win)
+    vim.api.nvim_win_set_cursor(list_win, { 1, 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<CR>', true, false, true), 'mx', false)
+    assert(vim.wait(500, function()
+      return state.active_session_id == 1
+    end, 10), 'enter in Trouble session list should select session 1')
     eq(1, state.active_session_id)
-    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
-    mouse_line = 4
-    focus_before_picker_click = vim.api.nvim_get_current_win()
-    terminal.select_session_at_mouse()
+    eq(state.win, vim.api.nvim_get_current_win())
+
+    assert(vim.wait(500, function()
+      local win = session_win()
+      if not win then
+        return false
+      end
+      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+      return lines[2] and lines[2]:match '%(2%)'
+    end, 10), 'session list should refresh after selecting session 1')
+    list_win = session_win()
+    vim.api.nvim_set_current_win(list_win)
+    vim.api.nvim_win_set_cursor(list_win, { 2, 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<CR>', true, false, true), 'mx', false)
+    assert(vim.wait(500, function()
+      return state.active_session_id == 2
+    end, 10), 'enter in Trouble session list should select session 2')
     eq(2, state.active_session_id)
-    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
-
-    vim.api.nvim_set_current_win(state.picker_win)
-    mouse_win = source_win
-    mouse_line = 1
-    terminal.select_session_at_mouse()
-    eq(source_win, vim.api.nvim_get_current_win())
-    mouse_win = nil
-
-    local picker_view = vim.api.nvim_win_call(state.picker_win, function()
-      return vim.fn.winsaveview()
-    end)
-    eq(0, picker_view.leftcol)
+    eq(state.win, vim.api.nvim_get_current_win())
 
     terminal.select_session(1, { focus = false })
     eq(1, state.active_session_id)
