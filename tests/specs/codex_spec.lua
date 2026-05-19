@@ -762,7 +762,7 @@ describe('codex.nvim', function()
         return false
       end
       local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
-      return lines[1] and lines[1]:match '[%w%-]+ %(1%)' and lines[2] and lines[2]:match '[%w%-]+ %(2%)'
+      return lines[1] and lines[1]:match '%(1%)' and lines[2] and lines[2]:match '%(2%)'
     end, 10), 'session list should be visible: ' .. session_debug())
     local list_win = session_win()
     local list_lines = session_lines()
@@ -770,8 +770,8 @@ describe('codex.nvim', function()
     eq(empty_buffers_before, listed_empty_buffers())
     eq(24, list_width)
     eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    assert(list_lines[1]:match '[%w%-]+ %(1%)', 'session list should show the first session name')
-    assert(list_lines[2]:match '[%w%-]+ %(2%)', 'session list should show the second session name')
+    assert(list_lines[1]:match '%(1%)', 'session list should show the first session id')
+    assert(list_lines[2]:match '%(2%)', 'session list should show the second session id')
     eq(true, vim.w[list_win].codex_session_list)
     eq('trouble', vim.api.nvim_buf_get_option(vim.api.nvim_win_get_buf(list_win), 'filetype'))
     eq(false, vim.api.nvim_win_get_option(list_win, 'wrap'))

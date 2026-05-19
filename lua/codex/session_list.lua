@@ -156,13 +156,19 @@ local function apply_active_highlight(view)
     return
   end
 
+  local active_row
   for row, location in pairs(view.renderer._locations) do
     local item = location and location.item or nil
     if item and item.active then
       vim.api.nvim_buf_set_extmark(buf, ns, row - 1, 0, {
         line_hl_group = 'TabLineSel',
       })
+      active_row = active_row or row
     end
+  end
+
+  if active_row then
+    pcall(vim.api.nvim_win_set_cursor, win, { active_row, 0 })
   end
 end
 
@@ -369,7 +375,7 @@ function M.items()
     local session = state.sessions and state.sessions[id] or nil
     if session then
       local active = id == state.active_session_id
-      local label = ('%s (%d)'):format(session.name or ('session-' .. tostring(id)), id)
+      local label = ('(%d)'):format(id)
       table.insert(items, {
         id = 'codex-session-' .. tostring(id),
         session_id = id,
