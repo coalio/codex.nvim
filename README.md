@@ -8,7 +8,7 @@ The result is a terminal-first workflow with IDE context. Visual selections are 
 
 - Terminal UI backed by a local App Server WebSocket transport.
 - The terminal pane opens immediately; App Server startup and TUI connection happen asynchronously.
-- Multiple Codex terminal sessions can share the pane, with a Trouble-backed right-side session list.
+- Multiple Codex terminal sessions can share the pane, with a native right-side session tab column.
 - Visual/range `:CodexSend` without a second prompt; no-argument sends insert an `@file#Lx-Ly` reference into the Codex prompt and leave the user in control.
 - Submit-time hidden source injection through `thread/inject_items` for visible `@file#Lx-Ly` or `file#Lx-Ly` prompt references.
 - Active-buffer context on Neovim-originated prompts.
@@ -20,7 +20,6 @@ The result is a terminal-first workflow with IDE context. Visual selections are 
 ## Requirements
 
 - Neovim with LuaJIT.
-- [folke/trouble.nvim](https://github.com/folke/trouble.nvim). codex.nvim requires Trouble for session list window management.
 - Codex CLI available either on Neovim's `PATH` or from your login/interactive shell startup files. If your editor is launched outside a shell, codex.nvim asks your configured shell to resolve bare commands like `codex` before starting jobs.
 
 Install Codex with npm:
@@ -100,7 +99,7 @@ return {
 - `:CodexFocus` focuses the Codex terminal and enters insert mode when the TUI is running.
 - `:CodexSend [prompt]` sends a prompt. From visual mode or with a range, a prompt argument submits that prompt with an `@file#Lx-Ly` reference. Without a prompt argument, Codex inserts the reference into the TUI input and does not submit.
 - `:CodexSession new` opens a separate numbered Codex terminal session. `:CodexSession 2` selects session 2.
-- In the Trouble session list, `<CR>` selects the highlighted session. A single click selects the clicked session.
+- The right-side session tab column shows numbered sessions like `(1)` and `(2)`. Clicking a number selects that session without focusing the tab column.
 - `:CodexYolo` opens a new Codex terminal session with Codex YOLO mode (`--dangerously-bypass-approvals-and-sandbox`).
 - `:CodexAdd [path] [start_line] [end_line]` stages a file, directory, or selection as context for the next Neovim-originated prompt.
 - `:CodexNew` asks the terminal UI to start a fresh thread.
@@ -174,7 +173,7 @@ require('codex').setup({
     interrupt = '<C-c>',
   },
   session_list = {
-    width = 24,
+    width = 7,
   },
   app_server = {
     ui = 'terminal',

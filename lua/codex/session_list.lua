@@ -3,27 +3,41 @@ local state = require 'codex.state'
 local M = {
   config = nil,
   generation = 0,
-  mode = 'codex_sessions',
-  view = nil,
+  buf = nil,
+  win = nil,
+  last_non_list_win = nil,
 }
 
-local ns = vim.api.nvim_create_namespace 'codex.session_list'
-
-local function require_trouble()
-  local ok, trouble = pcall(require, 'trouble')
-  if not ok then
-    error('codex.nvim requires folke/trouble.nvim for Codex session management: ' .. tostring(trouble), 0)
-  end
-  return trouble
-end
+local statuscolumn = '%@v:lua.CodexSessionListClick@%{%v:lua.CodexSessionListStatusColumn()%}%T'
 
 local function valid_win(win)
   return type(win) == 'number' and vim.api.nvim_win_is_valid(win)
 end
 
+local function valid_buf(buf)
+  return type(buf) == 'number' and vim.api.nvim_buf_is_valid(buf)
+end
+
 local function current_win()
   local ok, win = pcall(vim.api.nvim_get_current_win)
   return ok and win or nil
+end
+
+local function is_list_win(win)
+  return valid_win(M.win) and win == M.win
+end
+
+local function remember_window(win)
+  if valid_win(win) and not is_list_win(win) then
+    M.last_non_list_win = win
+  end
+end
+
+local function restore_focus(win)
+  if valid_win(win) then
+    pcall(vim.api.nvim_set_current_win, win)
+    remember_window(win)
+  end
 end
 
 local function session_width(config)
@@ -42,171 +56,96 @@ local function resize_terminal(config)
   end
 end
 
-local function mark_window(win)
-  if not valid_win(win) then
-    return
+local function session_id_at_line(line)
+  line = tonumber(line)
+  if not line or line < 1 then
+    return nil
   end
-
-  vim.w[win].codex_session_list = true
-  if vim.fn.exists '+winfixbuf' == 1 then
-    pcall(vim.api.nvim_set_option_value, 'winfixbuf', true, { scope = 'local', win = win })
-  end
-  pcall(vim.api.nvim_set_option_value, 'number', false, { scope = 'local', win = win })
-  pcall(vim.api.nvim_set_option_value, 'relativenumber', false, { scope = 'local', win = win })
-  pcall(vim.api.nvim_set_option_value, 'signcolumn', 'no', { scope = 'local', win = win })
-  pcall(vim.api.nvim_set_option_value, 'wrap', false, { scope = 'local', win = win })
-  pcall(vim.api.nvim_set_option_value, 'sidescrolloff', 0, { scope = 'local', win = win })
-  pcall(vim.api.nvim_set_option_value, 'winfixwidth', true, { scope = 'local', win = win })
-end
-
-local function restore_focus(win)
-  if valid_win(win) then
-    pcall(vim.api.nvim_set_current_win, win)
-  end
-end
-
-local function view_window(view)
-  return view and view.win and view.win.win or nil
-end
-
-local function view_is_open(view)
-  local win = view_window(view)
-  return valid_win(win)
-end
-
-local function session_views(open)
-  local ok, view = pcall(require, 'trouble.view')
-  if not ok then
-    return {}
-  end
-  return view.get {
-    mode = M.mode,
-    open = open,
-  }
-end
-
-local function active_view()
-  if view_is_open(M.view) then
-    return M.view
-  end
-  local views = session_views(true)
-  for index = #views, 1, -1 do
-    local view = views[index].view
-    local win = view_window(view)
-    if valid_win(win) then
-      return view
-    end
+  local id = state.session_order and state.session_order[line] or nil
+  if id and state.sessions and state.sessions[id] then
+    return id
   end
   return nil
 end
 
-local function close_session_views(except)
-  for _, entry in ipairs(session_views(false)) do
-    local view = entry.view
-    if view and view ~= except and view.close then
-      pcall(function()
-        view:close()
-      end)
-    end
+local function label_for_line(line)
+  local id = session_id_at_line(line)
+  if not id then
+    return ''
   end
+  return ('(%d)'):format(id)
 end
 
-local function apply_view_window(view, config)
-  local win = view_window(view)
-  if valid_win(win) then
-    mark_window(win)
-    pcall(vim.api.nvim_win_set_width, win, session_width(config))
+local function pad_label(label, width)
+  if label == '' then
+    return ''
   end
-  resize_terminal(config)
+  if #label >= width then
+    return label
+  end
+  local left = math.floor((width - #label) / 2)
+  local right = width - #label - left
+  return string.rep(' ', left) .. label .. string.rep(' ', right)
 end
 
-local function select_item(item, opts)
-  local session_id = item and item.session_id or nil
-  if not session_id then
-    return false
+local function ensure_buffer()
+  if valid_buf(M.buf) then
+    return M.buf
   end
-  return require('codex.terminal').select_session(session_id, opts or { focus = true })
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  M.buf = buf
+  vim.api.nvim_buf_set_option(buf, 'bufhidden', 'wipe')
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(buf, 'filetype', 'codex-session-list')
+  vim.api.nvim_buf_set_option(buf, 'swapfile', false)
+  return buf
 end
 
-local function item_at_line(view, line)
-  if not view or not view.renderer or type(line) ~= 'number' then
-    return nil
+local function sync_buffer_lines()
+  local buf = ensure_buffer()
+  local count = math.max(1, #(state.session_order or {}))
+  local lines = {}
+  for index = 1, count do
+    lines[index] = ''
   end
-  local location = view.renderer:at(line) or {}
-  return location.item
+
+  local was_modifiable = vim.api.nvim_buf_get_option(buf, 'modifiable')
+  vim.api.nvim_buf_set_option(buf, 'modifiable', true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, 'modified', false)
+  vim.api.nvim_buf_set_option(buf, 'modifiable', was_modifiable)
 end
 
-local function select_at_mouse(view)
-  local pos = vim.fn.getmousepos()
-  if not pos or pos.winid ~= view_window(view) then
-    return false
-  end
-  return select_item(item_at_line(view, pos.line), { focus = true })
+local function set_win_option(win, name, value)
+  pcall(vim.api.nvim_set_option_value, name, value, { scope = 'local', win = win })
 end
 
-local function apply_active_highlight(view)
-  local win = view_window(view)
+local function configure_window(win, config)
   if not valid_win(win) then
     return
   end
 
-  local buf = vim.api.nvim_win_get_buf(win)
-  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-  if not view.renderer or not view.renderer._locations then
-    return
+  local width = session_width(config)
+  vim.w[win].codex_session_list = true
+  if vim.fn.exists '+winfixbuf' == 1 then
+    set_win_option(win, 'winfixbuf', true)
   end
-
-  local active_row
-  for row, location in pairs(view.renderer._locations) do
-    local item = location and location.item or nil
-    if item and item.active then
-      vim.api.nvim_buf_set_extmark(buf, ns, row - 1, 0, {
-        line_hl_group = 'TabLineSel',
-      })
-      active_row = active_row or row
-    end
-  end
-
-  if active_row then
-    pcall(vim.api.nvim_win_set_cursor, win, { active_row, 0 })
-  end
-end
-
-local function apply_mouse_mapping(view)
-  local win = view_window(view)
-  if not valid_win(win) then
-    return
-  end
-
-  local buf = vim.api.nvim_win_get_buf(win)
-  vim.keymap.set('n', '<LeftMouse>', function()
-    local selected_view = view
-    vim.schedule(function()
-      select_at_mouse(selected_view)
-    end)
-    return '<Ignore>'
-  end, {
-    buffer = buf,
-    desc = 'Select Codex session',
-    expr = true,
-    nowait = true,
-    replace_keycodes = true,
-  })
-end
-
-local function ensure_view_window(view)
-  if view_is_open(view) or not view or not view.win or not view.win.open then
-    return
-  end
-  if view.count and view:count() == 0 then
-    return
-  end
-  pcall(function()
-    view.win:open()
-    if view.update then
-      view:update()
-    end
-  end)
+  set_win_option(win, 'number', true)
+  set_win_option(win, 'relativenumber', false)
+  set_win_option(win, 'numberwidth', width)
+  set_win_option(win, 'signcolumn', 'no')
+  set_win_option(win, 'foldcolumn', '0')
+  set_win_option(win, 'statuscolumn', statuscolumn)
+  set_win_option(win, 'cursorline', false)
+  set_win_option(win, 'cursorcolumn', false)
+  set_win_option(win, 'wrap', false)
+  set_win_option(win, 'sidescrolloff', 0)
+  set_win_option(win, 'winfixwidth', true)
+  set_win_option(win, 'winbar', '')
+  set_win_option(win, 'fillchars', 'eob: ')
+  set_win_option(win, 'winhighlight', 'CursorLine:Normal,CursorLineNr:Normal')
+  pcall(vim.api.nvim_win_set_width, win, width)
 end
 
 local function float_win_opts(config)
@@ -217,79 +156,89 @@ local function float_win_opts(config)
 
   local border_offset = config.border == 'none' and 0 or 2
   return {
-    type = 'float',
     relative = 'editor',
-    size = {
-      width = session_width(config),
-      height = win_config.height,
-    },
-    position = {
-      win_config.row,
-      win_config.col + win_config.width + border_offset,
-    },
-    wo = {
-      wrap = false,
-      winfixwidth = true,
-    },
+    width = session_width(config),
+    height = win_config.height,
+    row = win_config.row,
+    col = win_config.col + win_config.width + border_offset,
+    style = 'minimal',
   }
 end
 
-local function split_win_opts(config)
-  return {
-    type = 'split',
-    relative = 'win',
-    position = 'right',
-    size = session_width(config),
-    win = state.win,
-    wo = {
-      winfixbuf = true,
-      winfixwidth = true,
-      wrap = false,
-    },
-  }
-end
-
-local function window_opts(config)
+local function open_window(config)
+  local buf = ensure_buffer()
   if config.panel then
-    return split_win_opts(config)
+    return vim.api.nvim_open_win(buf, false, {
+      win = state.win,
+      split = 'right',
+      width = session_width(config),
+    })
   end
-  return float_win_opts(config)
+
+  local opts = float_win_opts(config)
+  if not opts then
+    return nil
+  end
+  return vim.api.nvim_open_win(buf, false, opts)
+end
+
+local function repair_window(config)
+  if not valid_win(M.win) then
+    return false
+  end
+  sync_buffer_lines()
+  configure_window(M.win, config)
+  resize_terminal(config)
+  pcall(vim.cmd.redrawstatus)
+  return true
+end
+
+local function close_window()
+  if valid_win(M.win) then
+    pcall(vim.api.nvim_win_close, M.win, true)
+  end
+  M.win = nil
+  if valid_buf(M.buf) then
+    pcall(vim.api.nvim_buf_delete, M.buf, { force = true })
+  end
+  M.buf = nil
 end
 
 function M.setup(config)
   M.config = config
-  require_trouble()
+  local group = vim.api.nvim_create_augroup('CodexSessionList', { clear = true })
+  vim.api.nvim_create_autocmd('WinEnter', {
+    group = group,
+    callback = function()
+      remember_window(current_win())
+    end,
+  })
 end
 
 function M.reset()
   M.generation = M.generation + 1
-  M.view = nil
+  close_window()
+  M.last_non_list_win = nil
 end
 
 function M.is_open()
-  return view_is_open(M.view) or require_trouble().is_open { mode = M.mode }
+  return valid_win(M.win)
 end
 
 function M.close()
-  require_trouble()
   M.generation = M.generation + 1
-  if M.view and M.view.close then
-    pcall(function()
-      M.view:close()
-    end)
-  end
-  M.view = nil
-  close_session_views()
+  close_window()
 end
 
 function M.refresh()
-  require_trouble()
-  if M.view and M.view.refresh then
-    pcall(function()
-      M.view:refresh()
-    end)
+  if not M.is_open() then
+    return
   end
-  require_trouble().refresh { mode = M.mode }
+  if not state.has_sessions or not state.has_sessions() or not valid_win(state.win) then
+    M.close()
+    return
+  end
+  repair_window(M.config)
 end
 
 function M.emit_changed()
@@ -297,9 +246,7 @@ function M.emit_changed()
     pattern = 'CodexSessionsChanged',
     modeline = false,
   })
-  if M.is_open() then
-    M.refresh()
-  end
+  M.refresh()
 end
 
 function M.open(config, opts)
@@ -310,85 +257,76 @@ function M.open(config, opts)
     return nil
   end
 
-  local win = window_opts(config)
-  if not win then
-    M.close()
+  M.config = config
+  M.generation = M.generation + 1
+  local restore_to = opts.restore_win or (opts.focus == false and current_win()) or nil
+  remember_window(restore_to)
+
+  sync_buffer_lines()
+  if not valid_win(M.win) then
+    M.win = open_window(config)
+  end
+  if not valid_win(M.win) then
     return nil
   end
 
-  M.generation = M.generation + 1
-  local generation = M.generation
-  close_session_views()
-  M.view = nil
-
-  local restore_to = opts.focus == false and (opts.restore_win or current_win()) or nil
-  local trouble = require_trouble()
-  local view = trouble.open {
-    mode = M.mode,
-    auto_preview = false,
-    follow = false,
-    focus = opts.focus == true,
-    multiline = false,
-    open_no_results = true,
-    refresh = true,
-    restore = false,
-    new = true,
-    warn_no_results = false,
-    win = win,
-  }
-  view = active_view() or view
-  M.view = view
-
-  local function repair()
-    if generation ~= M.generation or view ~= M.view then
-      if view and view.close then
-        pcall(function()
-          view:close()
-        end)
-      end
-      return
-    end
-    ensure_view_window(view)
-    apply_view_window(view, config)
-    apply_active_highlight(view)
-    apply_mouse_mapping(view)
-    close_session_views(view)
-    if opts.focus == false then
-      restore_focus(restore_to)
-    end
+  repair_window(config)
+  if opts.focus == false then
+    restore_focus(restore_to)
   end
-
-  if view and view.wait then
-    view:wait(repair)
-  else
-    vim.schedule(repair)
-  end
-  vim.defer_fn(repair, 50)
-  vim.defer_fn(repair, 250)
-
-  return view
+  return M.win
 end
 
-function M.items()
-  local items = {}
-  for index, id in ipairs(state.session_order or {}) do
-    local session = state.sessions and state.sessions[id] or nil
-    if session then
-      local active = id == state.active_session_id
-      local label = ('(%d)'):format(id)
-      table.insert(items, {
-        id = 'codex-session-' .. tostring(id),
-        session_id = id,
-        session_index = index,
-        label = label,
-        active = active,
-        filename = vim.fn.getcwd(),
-        source = 'codex_sessions',
-        pos = { index, 0 },
-      })
-    end
+function M.select_line(win, line)
+  if not is_list_win(win) then
+    return false
   end
-  return items
+  local session_id = session_id_at_line(line)
+  if not session_id then
+    return false
+  end
+
+  local active_win = current_win()
+  local restore_to = active_win and not is_list_win(active_win) and active_win or M.last_non_list_win
+  if not valid_win(restore_to) and valid_win(state.win) then
+    restore_to = state.win
+  end
+
+  local ok = require('codex.terminal').select_session(session_id, {
+    focus = false,
+    restore_win = restore_to,
+  })
+  if ok then
+    M.refresh()
+    restore_focus(restore_to)
+  end
+  return ok
+end
+
+function M.statuscolumn()
+  local label = label_for_line(vim.v.lnum)
+  if label == '' then
+    return ''
+  end
+  local id = session_id_at_line(vim.v.lnum)
+  local highlight = id == state.active_session_id and '%#TabLineSel#' or '%#TabLine#'
+  return highlight .. pad_label(label, session_width(M.config)) .. '%*'
+end
+
+function M.click()
+  local pos = vim.fn.getmousepos()
+  if not pos then
+    return
+  end
+  M.select_line(pos.winid, pos.line)
+end
+
+_G.CodexSessionListStatusColumn = function()
+  return require('codex.session_list').statuscolumn()
+end
+
+_G.CodexSessionListClick = function()
+  return require('codex.session_list').click()
 end
 
 return M

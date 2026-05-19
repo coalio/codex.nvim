@@ -1,7 +1,6 @@
 -- tests/codex_spec.lua
 -- luacheck: globals describe it assert eq
 -- luacheck: ignore a            -- “a” is imported but unused
-require('tests.helpers').bootstrap_trouble()
 
 local a = require 'plenary.async.tests'
 local eq = assert.equals
@@ -23,9 +22,6 @@ describe('codex.nvim', function()
     } do
       package.loaded[module] = nil
     end
-    pcall(function()
-      require('trouble').close { mode = 'codex_sessions' }
-    end)
     vim.cmd 'set noswapfile' -- prevent side effects
     vim.cmd 'silent! bwipeout!' -- close any open codex windows
   end)
@@ -677,42 +673,40 @@ describe('codex.nvim', function()
     local state = require 'codex.state'
     local terminal = require 'codex.terminal'
     local session_list = require 'codex.session_list'
-    local function session_view()
-      if session_list.view and session_list.view.win and session_list.view.win.win and vim.api.nvim_win_is_valid(session_list.view.win.win) then
-        return session_list.view
-      end
-      local views = require('trouble.view').get { mode = 'codex_sessions', open = true }
-      for index = #views, 1, -1 do
-        local view = views[index].view
-        local win = view and view.win and view.win.win
-        if win and vim.api.nvim_win_is_valid(win) then
-          return view
-        end
-      end
-      return nil
-    end
     local function session_win()
-      local view = session_view()
-      local win = view and view.win and view.win.win
-      if win and vim.api.nvim_win_is_valid(win) then
-        return win
+      if session_list.win and vim.api.nvim_win_is_valid(session_list.win) then
+        return session_list.win
       end
       return nil
     end
     local function session_lines()
       local win = session_win()
-      assert(win, 'Codex session Trouble window should be open')
+      assert(win, 'Codex session tab window should be open')
       return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
     end
-    local function active_highlight_seen(win, line)
-      local ns = vim.api.nvim_get_namespaces()['codex.session_list']
-      if not ns then
-        return false
+    local function statuscolumn_line(win, line)
+      return vim.api.nvim_eval_statusline(vim.wo[win].statuscolumn, {
+        winid = win,
+        use_statuscol_lnum = line,
+        highlights = true,
+      })
+    end
+    local function statuscolumn_has_highlight(result, group)
+      for _, highlight in ipairs(result.highlights or {}) do
+        if highlight.group == group then
+          return true
+        end
+        for _, candidate in ipairs(highlight.groups or {}) do
+          if candidate == group then
+            return true
+          end
+        end
       end
-      local buf = vim.api.nvim_win_get_buf(win)
-      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, { line - 1, 0 }, { line, 0 }, { details = true })) do
-        local details = mark[4] or {}
-        if details.line_hl_group == 'TabLineSel' then
+      return false
+    end
+    local function has_left_mouse_mapping(buf)
+      for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, 'n')) do
+        if map.lhs == '<LeftMouse>' then
           return true
         end
       end
@@ -730,7 +724,6 @@ describe('codex.nvim', function()
     end
     vim.cmd 'enew'
     vim.api.nvim_buf_set_name(0, '/tmp/codex-session-source.lua')
-    local source_win = vim.api.nvim_get_current_win()
     local empty_buffers_before = listed_empty_buffers()
     terminal.setup {
       cmd = 'codex',
@@ -761,61 +754,65 @@ describe('codex.nvim', function()
       if not win or vim.api.nvim_win_get_width(win) ~= 7 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
         return false
       end
-      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
-      return lines[1] and lines[1]:match '%(1%)' and lines[2] and lines[2]:match '%(2%)'
+      return statuscolumn_line(win, 1).str:match '%(1%)' and statuscolumn_line(win, 2).str:match '%(2%)'
     end, 10), 'session list should be visible: ' .. session_debug())
     local list_win = session_win()
     local list_lines = session_lines()
     local list_width = vim.api.nvim_win_get_width(list_win)
+    local list_buf = vim.api.nvim_win_get_buf(list_win)
     eq(empty_buffers_before, listed_empty_buffers())
     eq(7, list_width)
     eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    assert(list_lines[1]:match '%(1%)', 'session list should show the first session id')
-    assert(list_lines[2]:match '%(2%)', 'session list should show the second session id')
+    eq('', list_lines[1])
+    eq('', list_lines[2])
     eq(true, vim.w[list_win].codex_session_list)
-    eq('trouble', vim.api.nvim_buf_get_option(vim.api.nvim_win_get_buf(list_win), 'filetype'))
+    eq('codex-session-list', vim.api.nvim_buf_get_option(list_buf, 'filetype'))
+    eq(true, vim.api.nvim_win_get_option(list_win, 'number'))
+    eq(7, vim.api.nvim_win_get_option(list_win, 'numberwidth'))
+    eq(false, vim.api.nvim_win_get_option(list_win, 'cursorline'))
     eq(false, vim.api.nvim_win_get_option(list_win, 'wrap'))
     eq(0, vim.api.nvim_win_get_option(list_win, 'sidescrolloff'))
+    assert(vim.wo[list_win].statuscolumn:match 'CodexSessionListClick', 'session list should use statuscolumn click regions')
+    assert(vim.wo[list_win].statuscolumn:match 'CodexSessionListStatusColumn', 'session list should render labels through statuscolumn')
+    assert(not has_left_mouse_mapping(list_buf), 'session list should not use buffer mouse mappings')
 
-    vim.api.nvim_set_current_win(list_win)
-    local left_mouse_mapping = vim.fn.maparg('<LeftMouse>', 'n', false, true)
-    assert(type(left_mouse_mapping.callback) == 'function', 'single click should be mapped for session selection')
-    eq('<Ignore>', left_mouse_mapping.callback())
-    vim.api.nvim_set_current_win(source_win)
+    local inactive_status = statuscolumn_line(list_win, 1)
+    local active_status = statuscolumn_line(list_win, 2)
+    assert(inactive_status.str:match '%(1%)', 'session list should show the first session id in statuscolumn')
+    assert(active_status.str:match '%(2%)', 'session list should show the second session id in statuscolumn')
+    assert(statuscolumn_has_highlight(inactive_status, 'TabLine'), 'inactive session should use TabLine')
+    assert(statuscolumn_has_highlight(active_status, 'TabLineSel'), 'active session should use TabLineSel')
 
-    assert(vim.wait(500, function()
-      return active_highlight_seen(list_win, 2)
-    end, 10), 'active session should be highlighted')
-    assert(not list_lines[2]:match '%*', 'active session should not use a text marker')
-
-    list_win = session_win()
-    vim.api.nvim_set_current_win(list_win)
-    vim.api.nvim_win_set_cursor(list_win, { 1, 0 })
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<CR>', true, false, true), 'mx', false)
+    vim.api.nvim_set_current_win(state.win)
+    mouse_win = list_win
+    mouse_line = 1
+    _G.CodexSessionListClick()
     assert(vim.wait(500, function()
       return state.active_session_id == 1
-    end, 10), 'enter in Trouble session list should select session 1')
+    end, 10), 'statuscolumn click should select session 1')
     eq(1, state.active_session_id)
     eq(state.win, vim.api.nvim_get_current_win())
+    assert(not vim.api.nvim_get_mode().mode:match '^[vV\22]', 'session statuscolumn click should not enter visual mode')
 
     assert(vim.wait(500, function()
       local win = session_win()
       if not win then
         return false
       end
-      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
-      return lines[2] and lines[2]:match '%(2%)'
+      return statuscolumn_line(win, 2).str:match '%(2%)'
     end, 10), 'session list should refresh after selecting session 1')
     list_win = session_win()
-    vim.api.nvim_set_current_win(list_win)
+    eq(false, vim.api.nvim_win_get_option(list_win, 'cursorline'))
+    assert(statuscolumn_has_highlight(statuscolumn_line(list_win, 1), 'TabLineSel'), 'selected session 1 should be highlighted')
     mouse_win = list_win
     mouse_line = 2
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<LeftMouse>', true, false, true), 'mx', false)
+    _G.CodexSessionListClick()
     assert(vim.wait(500, function()
       return state.active_session_id == 2
-    end, 10), 'single click in Trouble session list should select session 2')
+    end, 10), 'statuscolumn click should select session 2')
     eq(2, state.active_session_id)
     eq(state.win, vim.api.nvim_get_current_win())
+    eq(false, vim.api.nvim_win_get_option(list_win, 'cursorline'))
     mouse_win = nil
 
     terminal.select_session(1, { focus = false })
@@ -837,6 +834,10 @@ describe('codex.nvim', function()
     eq(1, state.active_session_id)
     eq(first_buf, state.buf)
     eq(first_buf, vim.api.nvim_win_get_buf(state.win))
+    assert(vim.wait(500, function()
+      local win = session_win()
+      return win and vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win)) == 1 and statuscolumn_line(win, 1).str:match '%(1%)'
+    end, 10), 'session list should shrink after closing a session')
 
     terminal.close()
     vim.fn = original_fn

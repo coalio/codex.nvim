@@ -973,7 +973,7 @@ function M.select_session(id, opts)
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_set_buf(state.win, session.buf)
     configure_terminal_window(state.win, session.cwd)
-    ensure_session_list(M.config, opts.focus == false and current_win() or nil)
+    ensure_session_list(M.config, opts.focus == false and (opts.restore_win or current_win()) or nil)
     if opts.focus ~= false then
       focus_window(opts.insert ~= false)
     end

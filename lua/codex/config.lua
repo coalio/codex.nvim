@@ -25,7 +25,7 @@ M.defaults = {
   focus_after_send = false,
   selection_prompt = 'Use the selected Neovim context.',
   session_list = {
-    width = 24,
+    width = 7,
   },
   app_server = {
     ui = 'terminal', -- terminal | buffer
