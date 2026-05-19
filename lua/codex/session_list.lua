@@ -2,11 +2,12 @@ local state = require 'codex.state'
 
 local M = {
   config = nil,
-  expanded = false,
   generation = 0,
   mode = 'codex_sessions',
   view = nil,
 }
+
+local ns = vim.api.nvim_create_namespace 'codex.session_list'
 
 local function require_trouble()
   local ok, trouble = pcall(require, 'trouble')
@@ -28,11 +29,7 @@ end
 local function session_width(config)
   local list = config and config.session_list or {}
   local width = tonumber(list.width) or 24
-  width = math.max(1, math.floor(width))
-  if M.expanded then
-    return width
-  end
-  return math.max(5, math.min(width, #'[+] (S)'))
+  return math.max(1, math.floor(width))
 end
 
 local function terminal_width(config)
@@ -123,6 +120,74 @@ local function apply_view_window(view, config)
   resize_terminal(config)
 end
 
+local function select_item(item, opts)
+  local session_id = item and item.session_id or nil
+  if not session_id then
+    return false
+  end
+  return require('codex.terminal').select_session(session_id, opts or { focus = true })
+end
+
+local function item_at_line(view, line)
+  if not view or not view.renderer or type(line) ~= 'number' then
+    return nil
+  end
+  local location = view.renderer:at(line) or {}
+  return location.item
+end
+
+local function select_at_mouse(view)
+  local pos = vim.fn.getmousepos()
+  if not pos or pos.winid ~= view_window(view) then
+    return false
+  end
+  return select_item(item_at_line(view, pos.line), { focus = true })
+end
+
+local function apply_active_highlight(view)
+  local win = view_window(view)
+  if not valid_win(win) then
+    return
+  end
+
+  local buf = vim.api.nvim_win_get_buf(win)
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  if not view.renderer or not view.renderer._locations then
+    return
+  end
+
+  for row, location in pairs(view.renderer._locations) do
+    local item = location and location.item or nil
+    if item and item.active then
+      vim.api.nvim_buf_set_extmark(buf, ns, row - 1, 0, {
+        line_hl_group = 'TabLineSel',
+      })
+    end
+  end
+end
+
+local function apply_mouse_mapping(view)
+  local win = view_window(view)
+  if not valid_win(win) then
+    return
+  end
+
+  local buf = vim.api.nvim_win_get_buf(win)
+  vim.keymap.set('n', '<LeftMouse>', function()
+    local selected_view = view
+    vim.schedule(function()
+      select_at_mouse(selected_view)
+    end)
+    return '<LeftMouse>'
+  end, {
+    buffer = buf,
+    desc = 'Select Codex session',
+    expr = true,
+    nowait = true,
+    replace_keycodes = true,
+  })
+end
+
 local function ensure_view_window(view)
   if view_is_open(view) or not view or not view.win or not view.win.open then
     return
@@ -191,7 +256,6 @@ function M.setup(config)
 end
 
 function M.reset()
-  M.expanded = false
   M.generation = M.generation + 1
   M.view = nil
 end
@@ -280,6 +344,8 @@ function M.open(config, opts)
     end
     ensure_view_window(view)
     apply_view_window(view, config)
+    apply_active_highlight(view)
+    apply_mouse_mapping(view)
     close_session_views(view)
     if opts.focus == false then
       restore_focus(restore_to)
@@ -297,29 +363,19 @@ function M.open(config, opts)
   return view
 end
 
-function M.toggle_expanded()
-  M.expanded = not M.expanded
-  if M.is_open() then
-    M.open(M.config, { focus = false })
-  end
-  M.emit_changed()
-  return true
-end
-
 function M.items()
   local items = {}
   for index, id in ipairs(state.session_order or {}) do
     local session = state.sessions and state.sessions[id] or nil
     if session then
       local active = id == state.active_session_id
-      local label = M.expanded and ('%s (%d)'):format(session.name or ('session-' .. tostring(id)), id) or ('(%d)'):format(id)
+      local label = ('%s (%d)'):format(session.name or ('session-' .. tostring(id)), id)
       table.insert(items, {
         id = 'codex-session-' .. tostring(id),
         session_id = id,
         session_index = index,
         label = label,
         active = active,
-        active_marker = active and '* ' or '  ',
         filename = vim.fn.getcwd(),
         source = 'codex_sessions',
         pos = { index, 0 },

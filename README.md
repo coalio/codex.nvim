@@ -8,7 +8,7 @@ The result is a terminal-first workflow with IDE context. Visual selections are 
 
 - Terminal UI backed by a local App Server WebSocket transport.
 - The terminal pane opens immediately; App Server startup and TUI connection happen asynchronously.
-- Multiple Codex terminal sessions can share the pane, with a Trouble-backed right-side session list that toggles between numbered labels and named labels.
+- Multiple Codex terminal sessions can share the pane, with a Trouble-backed right-side session list.
 - Visual/range `:CodexSend` without a second prompt; no-argument sends insert an `@file#Lx-Ly` reference into the Codex prompt and leave the user in control.
 - Submit-time hidden source injection through `thread/inject_items` for visible `@file#Lx-Ly` or `file#Lx-Ly` prompt references.
 - Active-buffer context on Neovim-originated prompts.
@@ -100,7 +100,7 @@ return {
 - `:CodexFocus` focuses the Codex terminal and enters insert mode when the TUI is running.
 - `:CodexSend [prompt]` sends a prompt. From visual mode or with a range, a prompt argument submits that prompt with an `@file#Lx-Ly` reference. Without a prompt argument, Codex inserts the reference into the TUI input and does not submit.
 - `:CodexSession new` opens a separate numbered Codex terminal session. `:CodexSession 2` selects session 2.
-- In the Trouble session list, `<CR>` selects the highlighted session and `t` toggles numbered versus named labels.
+- In the Trouble session list, `<CR>` selects the highlighted session. A single click selects the clicked session.
 - `:CodexYolo` opens a new Codex terminal session with Codex YOLO mode (`--dangerously-bypass-approvals-and-sandbox`).
 - `:CodexAdd [path] [start_line] [end_line]` stages a file, directory, or selection as context for the next Neovim-originated prompt.
 - `:CodexNew` asks the terminal UI to start a fresh thread.
@@ -174,7 +174,7 @@ require('codex').setup({
     interrupt = '<C-c>',
   },
   session_list = {
-    width = 24, -- expanded width; collapsed width fits "[+] (S)"
+    width = 24,
   },
   app_server = {
     ui = 'terminal',

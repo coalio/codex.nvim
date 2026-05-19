@@ -11,10 +11,6 @@ local function select_session(_, ctx)
   require('codex.terminal').select_session(session_id, { focus = true })
 end
 
-local function toggle_expanded()
-  require('codex.session_list').toggle_expanded()
-end
-
 M.config = {
   modes = {
     codex_sessions = {
@@ -26,7 +22,7 @@ M.config = {
       },
       groups = {},
       sort = { 'session_index' },
-      format = '{active_marker}{label}',
+      format = '{label}',
       auto_preview = false,
       follow = false,
       multiline = false,
@@ -39,10 +35,6 @@ M.config = {
         ['<2-leftmouse>'] = {
           action = select_session,
           desc = 'Select Codex session',
-        },
-        ['t'] = {
-          action = toggle_expanded,
-          desc = 'Toggle Codex session names',
         },
       },
     },

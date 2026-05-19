@@ -635,6 +635,8 @@ describe('codex.nvim', function()
     local next_job = 700
     local exits = {}
     local sent = {}
+    local mouse_line = 1
+    local mouse_win = nil
     local function listed_empty_buffers()
       local count = 0
       for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
@@ -662,6 +664,9 @@ describe('codex.nvim', function()
       chansend = function(job, text)
         sent[job] = (sent[job] or '') .. text
         return #text
+      end,
+      getmousepos = function()
+        return { winid = mouse_win, line = mouse_line }
       end,
     }, { __index = original_fn })
 
@@ -698,6 +703,20 @@ describe('codex.nvim', function()
       local win = session_win()
       assert(win, 'Codex session Trouble window should be open')
       return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+    end
+    local function active_highlight_seen(win, line)
+      local ns = vim.api.nvim_get_namespaces()['codex.session_list']
+      if not ns then
+        return false
+      end
+      local buf = vim.api.nvim_win_get_buf(win)
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, { line - 1, 0 }, { line, 0 }, { details = true })) do
+        local details = mark[4] or {}
+        if details.line_hl_group == 'TabLineSel' then
+          return true
+        end
+      end
+      return false
     end
     local function session_debug()
       local win = session_win()
@@ -739,22 +758,20 @@ describe('codex.nvim', function()
     local expected_tui_width = math.max(1, math.floor(vim.o.columns * 0.25))
     assert(vim.wait(500, function()
       local win = session_win()
-      if not win or vim.api.nvim_win_get_width(win) ~= 7 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
+      if not win or vim.api.nvim_win_get_width(win) ~= 24 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
         return false
       end
       local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
-      return lines[1] and lines[1]:match '%(1%)' and lines[2] and lines[2]:match '%(2%)'
+      return lines[1] and lines[1]:match '[%w%-]+ %(1%)' and lines[2] and lines[2]:match '[%w%-]+ %(2%)'
     end, 10), 'session list should be visible: ' .. session_debug())
     local list_win = session_win()
     local list_lines = session_lines()
     local list_width = vim.api.nvim_win_get_width(list_win)
     eq(empty_buffers_before, listed_empty_buffers())
-    eq(7, list_width)
+    eq(24, list_width)
     eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    assert(list_lines[1]:match '%(1%)', 'collapsed list should show first session id')
-    assert(list_lines[2]:match '%(2%)', 'collapsed list should show second session id')
-    assert(not list_lines[1]:match '[%w]+%-[%w]+', 'collapsed list should not show the first session name')
-    assert(not list_lines[2]:match '[%w]+%-[%w]+', 'collapsed list should not show the second session name')
+    assert(list_lines[1]:match '[%w%-]+ %(1%)', 'session list should show the first session name')
+    assert(list_lines[2]:match '[%w%-]+ %(2%)', 'session list should show the second session name')
     eq(true, vim.w[list_win].codex_session_list)
     eq('trouble', vim.api.nvim_buf_get_option(vim.api.nvim_win_get_buf(list_win), 'filetype'))
     eq(false, vim.api.nvim_win_get_option(list_win, 'wrap'))
@@ -762,47 +779,13 @@ describe('codex.nvim', function()
 
     vim.api.nvim_set_current_win(list_win)
     local left_mouse_mapping = vim.fn.maparg('<LeftMouse>', 'n', false, true)
-    eq('', left_mouse_mapping.rhs or '')
+    assert(type(left_mouse_mapping.callback) == 'function', 'single click should be mapped for session selection')
     vim.api.nvim_set_current_win(source_win)
 
-    assert(list_lines[2]:match '%*', 'active session should be marked')
-
-    local focus_before_toggle = vim.api.nvim_get_current_win()
-    session_list.toggle_expanded()
     assert(vim.wait(500, function()
-      local win = session_win()
-      if not win or vim.api.nvim_win_get_width(win) ~= 24 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
-        return false
-      end
-      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
-      return lines[1] and lines[1]:match '[%w%-]+ %(1%)' and lines[2] and lines[2]:match '[%w%-]+ %(2%)'
-    end, 10), 'expanded session list should resize: ' .. session_debug())
-    eq(focus_before_toggle, vim.api.nvim_get_current_win())
-    list_win = session_win()
-    list_lines = session_lines()
-    list_width = vim.api.nvim_win_get_width(list_win)
-    eq(24, list_width)
-    eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    assert(list_lines[1]:match '[%w%-]+ %(1%)', 'expanded list should show the first session name')
-    assert(list_lines[2]:match '[%w%-]+ %(2%)', 'expanded list should show the second session name')
-
-    focus_before_toggle = vim.api.nvim_get_current_win()
-    session_list.toggle_expanded()
-    assert(vim.wait(500, function()
-      local win = session_win()
-      if not win or vim.api.nvim_win_get_width(win) ~= 7 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
-        return false
-      end
-      local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
-      return lines[1] and lines[1]:match '%(1%)'
-    end, 10), 'collapsed session list should resize: ' .. session_debug())
-    eq(focus_before_toggle, vim.api.nvim_get_current_win())
-    list_win = session_win()
-    list_lines = session_lines()
-    list_width = vim.api.nvim_win_get_width(list_win)
-    eq(7, list_width)
-    eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
-    assert(list_lines[1]:match '%(1%)', 'collapsed list should keep first session id')
+      return active_highlight_seen(list_win, 2)
+    end, 10), 'active session should be highlighted')
+    assert(not list_lines[2]:match '%*', 'active session should not use a text marker')
 
     list_win = session_win()
     vim.api.nvim_set_current_win(list_win)
@@ -824,13 +807,15 @@ describe('codex.nvim', function()
     end, 10), 'session list should refresh after selecting session 1')
     list_win = session_win()
     vim.api.nvim_set_current_win(list_win)
-    vim.api.nvim_win_set_cursor(list_win, { 2, 0 })
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<CR>', true, false, true), 'mx', false)
+    mouse_win = list_win
+    mouse_line = 2
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<LeftMouse>', true, false, true), 'mx', false)
     assert(vim.wait(500, function()
       return state.active_session_id == 2
-    end, 10), 'enter in Trouble session list should select session 2')
+    end, 10), 'single click in Trouble session list should select session 2')
     eq(2, state.active_session_id)
     eq(state.win, vim.api.nvim_get_current_win())
+    mouse_win = nil
 
     terminal.select_session(1, { focus = false })
     eq(1, state.active_session_id)
