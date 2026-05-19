@@ -29,7 +29,7 @@ end
 local function session_width(config)
   local list = config and config.session_list or {}
   local width = tonumber(list.width) or 24
-  return math.max(1, math.floor(width))
+  return math.max(1, math.min(math.floor(width), 7))
 end
 
 local function terminal_width(config)

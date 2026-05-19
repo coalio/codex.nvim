@@ -758,7 +758,7 @@ describe('codex.nvim', function()
     local expected_tui_width = math.max(1, math.floor(vim.o.columns * 0.25))
     assert(vim.wait(500, function()
       local win = session_win()
-      if not win or vim.api.nvim_win_get_width(win) ~= 24 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
+      if not win or vim.api.nvim_win_get_width(win) ~= 7 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
         return false
       end
       local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
@@ -768,7 +768,7 @@ describe('codex.nvim', function()
     local list_lines = session_lines()
     local list_width = vim.api.nvim_win_get_width(list_win)
     eq(empty_buffers_before, listed_empty_buffers())
-    eq(24, list_width)
+    eq(7, list_width)
     eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
     assert(list_lines[1]:match '%(1%)', 'session list should show the first session id')
     assert(list_lines[2]:match '%(2%)', 'session list should show the second session id')
