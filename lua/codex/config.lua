@@ -3,9 +3,12 @@ local M = {}
 M.defaults = {
   backend = 'app_server', -- app_server | terminal
   keymaps = {
-    toggle = nil,
+    toggle = '<leader>ac',
+    open = '<leader>aC',
+    session_new = '<leader>an',
+    yolo = '<leader>ay',
     quit = '<C-q>',
-    send = '<C-s>',
+    send = '<leader>as',
     interrupt = '<C-c>',
   },
   border = 'single',
@@ -21,6 +24,10 @@ M.defaults = {
   visual_demotion_delay_ms = 50,
   focus_after_send = false,
   selection_prompt = 'Use the selected Neovim context.',
+  session_picker = {
+    enabled = true,
+    width = 2,
+  },
   app_server = {
     ui = 'terminal', -- terminal | buffer
     listen = 'stdio://',
@@ -63,6 +70,9 @@ function M.apply(user_config)
   assert(type(config.include_active_buffer_context) == 'boolean', 'include_active_buffer_context must be a boolean')
   assert(type(config.visual_demotion_delay_ms) == 'number' and config.visual_demotion_delay_ms >= 0, 'visual_demotion_delay_ms must be non-negative')
   assert(type(config.selection_prompt) == 'string', 'selection_prompt must be a string')
+  assert(type(config.session_picker) == 'table', 'session_picker must be a table')
+  assert(type(config.session_picker.enabled) == 'boolean', 'session_picker.enabled must be a boolean')
+  assert(type(config.session_picker.width) == 'number' and config.session_picker.width >= 1, 'session_picker.width must be at least 1')
   assert(type(config.app_server) == 'table', 'app_server must be a table')
   assert(config.app_server.ui == 'terminal' or config.app_server.ui == 'buffer', 'app_server.ui must be terminal or buffer')
   assert(type(config.app_server.open_terminal) == 'boolean', 'app_server.open_terminal must be a boolean')

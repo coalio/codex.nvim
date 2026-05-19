@@ -8,6 +8,7 @@ The result is a terminal-first workflow with IDE context. Visual selections are 
 
 - Terminal UI backed by a local App Server WebSocket transport.
 - The terminal pane opens immediately; App Server startup and TUI connection happen asynchronously.
+- Multiple Codex terminal sessions can share the pane, with a narrow numbered vertical picker on the right.
 - Visual/range `:CodexSend` without a second prompt; no-argument sends insert an `@file#Lx-Ly` reference into the Codex prompt and leave the user in control.
 - Submit-time hidden source injection through `thread/inject_items` for visible `@file#Lx-Ly` or `file#Lx-Ly` prompt references.
 - Active-buffer context on Neovim-originated prompts.
@@ -48,6 +49,8 @@ return {
     'CodexResume',
     'CodexFocus',
     'CodexSend',
+    'CodexSession',
+    'CodexYolo',
     'CodexAdd',
     'CodexMcp',
     'CodexApps',
@@ -95,6 +98,8 @@ return {
 - `:CodexResume` resumes the most recent Codex session for the current workspace.
 - `:CodexFocus` focuses the Codex terminal and enters insert mode when the TUI is running.
 - `:CodexSend [prompt]` sends a prompt. From visual mode or with a range, a prompt argument submits that prompt with an `@file#Lx-Ly` reference. Without a prompt argument, Codex inserts the reference into the TUI input and does not submit.
+- `:CodexSession new` opens a separate numbered Codex terminal session. `:CodexSession 2` selects session 2.
+- `:CodexYolo` opens a new Codex terminal session with Codex YOLO mode (`--dangerously-bypass-approvals-and-sandbox`).
 - `:CodexAdd [path] [start_line] [end_line]` stages a file, directory, or selection as context for the next Neovim-originated prompt.
 - `:CodexNew` asks the terminal UI to start a fresh thread.
 - `:CodexInterrupt` interrupts the active turn.
@@ -104,6 +109,8 @@ return {
 - `:CodexMcp` shows configured MCP servers and tools.
 - `:CodexReloadMcp` reloads Codex MCP server configuration.
 - `:CodexStop` stops the local App Server process.
+
+Default mappings use `<leader>a`: `<leader>ac` and `<leader>aC` toggle the pane without changing sessions, `<leader>as` sends to the selected session, `<leader>an` creates a session, and `<leader>ay` creates a YOLO session.
 
 ## Selection Workflow
 
@@ -144,10 +151,17 @@ require('codex').setup({
   visual_demotion_delay_ms = 50,
   selection_prompt = 'Use the selected Neovim context.',
   keymaps = {
-    toggle = nil,
+    toggle = '<leader>ac',
+    open = '<leader>aC',
+    session_new = '<leader>an',
+    yolo = '<leader>ay',
     quit = '<C-q>',
-    send = '<C-s>',
+    send = '<leader>as',
     interrupt = '<C-c>',
+  },
+  session_picker = {
+    enabled = true,
+    width = 2,
   },
   app_server = {
     ui = 'terminal',
@@ -167,6 +181,8 @@ require('codex').setup({
   },
 })
 ```
+
+Terminal launches always include `--config tui.vim_mode_default=true`, including newly created sessions and YOLO sessions.
 
 Set `app_server.ui = 'buffer'` to use the App Server transcript buffer for debugging. Set `backend = 'terminal'` to use the legacy raw `codex` terminal wrapper without App Server integration.
 

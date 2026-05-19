@@ -43,6 +43,8 @@ describe('codex.nvim', function()
     assert(cmds['CodexResume'], 'CodexResume command not found')
     assert(cmds['CodexFocus'], 'CodexFocus command not found')
     assert(cmds['CodexSend'], 'CodexSend command not found')
+    assert(cmds['CodexSession'], 'CodexSession command not found')
+    assert(cmds['CodexYolo'], 'CodexYolo command not found')
     assert(cmds['CodexMcp'], 'CodexMcp command not found')
   end)
 
@@ -397,7 +399,8 @@ describe('codex.nvim', function()
 
     assert(received_cmd, 'termopen should be called')
     eq('codex', received_cmd[1])
-    eq('--remote', received_cmd[2])
+    assert(vim.tbl_contains(received_cmd, '--config'), 'vim mode config flag missing')
+    assert(vim.tbl_contains(received_cmd, 'tui.vim_mode_default=true'), 'vim mode default override missing')
     assert(vim.tbl_contains(received_cmd, '--remote'), 'remote flag missing')
     assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
     assert(vim.tbl_contains(received_cmd, '--cd'), 'remote TUI should receive an explicit cwd')
@@ -449,6 +452,8 @@ describe('codex.nvim', function()
     assert(received_cmd, 'termopen should be called')
     eq('codex', received_cmd[1])
     eq('resume', received_cmd[2])
+    assert(vim.tbl_contains(received_cmd, '--config'), 'vim mode config flag missing')
+    assert(vim.tbl_contains(received_cmd, 'tui.vim_mode_default=true'), 'vim mode default override missing')
     assert(vim.tbl_contains(received_cmd, '--last'), 'resume should use --last')
     assert(vim.tbl_contains(received_cmd, '--remote'), 'resume should connect to the remote app-server')
     assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
@@ -456,6 +461,126 @@ describe('codex.nvim', function()
     assert(vim.tbl_contains(received_cmd, '--cd'), 'resume should be scoped to the Neovim cwd')
     eq(vim.fn.getcwd(), received_cmd[#received_cmd])
 
+    vim.fn = original_fn
+  end)
+
+  it('opens numbered terminal sessions and sends to the selected session', function()
+    local original_fn = vim.fn
+    local next_job = 700
+    local exits = {}
+    local sent = {}
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(_, opts)
+        next_job = next_job + 1
+        exits[next_job] = opts.on_exit
+        return next_job
+      end,
+      chansend = function(job, text)
+        sent[job] = (sent[job] or '') .. text
+        return #text
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    local state = require 'codex.state'
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = true,
+      use_buffer = false,
+      include_active_buffer_context = false,
+      session_picker = { enabled = true, width = 2 },
+    }
+
+    terminal.open({ new_session = true })
+    local first_buf = state.buf
+    local first_job = state.job
+
+    terminal.new_session()
+    local second_buf = state.buf
+    local second_job = state.job
+
+    eq(2, #state.session_order)
+    eq(2, state.active_session_id)
+    assert(state.picker_win and vim.api.nvim_win_is_valid(state.picker_win), 'session picker should be visible')
+    local picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
+    eq('1', picker_lines[1])
+    eq('2', picker_lines[2])
+
+    terminal.select_session(1, { focus = false })
+    eq(1, state.active_session_id)
+    eq(first_buf, state.buf)
+    eq(first_job, state.job)
+    eq(first_buf, vim.api.nvim_win_get_buf(state.win))
+
+    terminal.send('first')
+    terminal.select_session(2, { focus = false })
+    terminal.send('second')
+
+    assert(sent[first_job] and sent[first_job]:match 'first', 'first session should receive its prompt')
+    assert(sent[second_job] and sent[second_job]:match 'second', 'second session should receive its prompt')
+    assert(not (sent[first_job] or ''):match 'second', 'second prompt should not be sent to first session')
+
+    exits[second_job](second_job, 0)
+    eq(1, #state.session_order)
+    eq(1, state.active_session_id)
+    eq(first_buf, state.buf)
+    eq(first_buf, vim.api.nvim_win_get_buf(state.win))
+
+    terminal.close()
+    vim.fn = original_fn
+  end)
+
+  it('launches all terminal sessions with vim mode config and supports YOLO sessions', function()
+    local original_fn = vim.fn
+    local received_cmds = {}
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd)
+        table.insert(received_cmds, cmd)
+        return 800 + #received_cmds
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open({ new_session = true })
+    terminal.yolo()
+
+    assert(vim.tbl_contains(received_cmds[1], '--config'), 'normal session should include --config')
+    assert(vim.tbl_contains(received_cmds[1], 'tui.vim_mode_default=true'), 'normal session should enable vim mode')
+    assert(vim.tbl_contains(received_cmds[2], '--config'), 'YOLO session should include --config')
+    assert(vim.tbl_contains(received_cmds[2], 'tui.vim_mode_default=true'), 'YOLO session should enable vim mode')
+    assert(vim.tbl_contains(received_cmds[2], '--dangerously-bypass-approvals-and-sandbox'), 'YOLO session should include bypass flag')
+
+    terminal.close()
     vim.fn = original_fn
   end)
 

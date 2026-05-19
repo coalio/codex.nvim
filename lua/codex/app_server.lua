@@ -45,6 +45,27 @@ local function text_item(text)
   }
 end
 
+local function app_context(session)
+  if state.app_context then
+    return state.app_context(session)
+  end
+  return state.app
+end
+
+local function context_for_thread(thread_id)
+  local session = state.find_session_by_thread and state.find_session_by_thread(thread_id) or nil
+  return app_context(session), session
+end
+
+local function clear_all_session_contexts()
+  for _, id in ipairs(state.session_order or {}) do
+    local session = state.sessions and state.sessions[id] or nil
+    if session and state.clear_session_app then
+      state.clear_session_app(session)
+    end
+  end
+end
+
 local function context_label(item)
   if item.line_start and item.line_end then
     return ('%s:%d-%d'):format(item.name or item.path, item.line_start + 1, item.line_end + 1)
@@ -52,9 +73,10 @@ local function context_label(item)
   return item.label or item.name or item.path
 end
 
-local function build_input(prompt, opts)
+local function build_input(prompt, opts, ctx)
   opts = opts or {}
-  local pending = vim.deepcopy(state.app.pending_context or {})
+  ctx = ctx or app_context()
+  local pending = vim.deepcopy(ctx.pending_context or {})
   local context_items = {}
   local input = {}
   local text = prompt or ''
@@ -114,7 +136,7 @@ local function build_input(prompt, opts)
   end
 
   table.insert(input, 1, text_item(text))
-  state.app.pending_context = {}
+  ctx.pending_context = {}
 
   return input, context_items
 end
@@ -133,12 +155,13 @@ local function editor_instructions()
   }, ' ')
 end
 
-local function dispatch_turn(input)
-  if state.app.running and state.app.active_turn_id then
+local function dispatch_turn(input, ctx)
+  ctx = ctx or app_context()
+  if ctx.running and ctx.active_turn_id then
     state.app.client:request('turn/steer', {
-      threadId = state.app.thread_id,
+      threadId = ctx.thread_id,
       input = input,
-      expectedTurnId = state.app.active_turn_id,
+      expectedTurnId = ctx.active_turn_id,
     }, function(req_err)
       if req_err then
         logger.error('turn/steer failed:', req_err.message or util.text_content(req_err))
@@ -148,41 +171,43 @@ local function dispatch_turn(input)
   end
 
   state.app.client:request('turn/start', {
-    threadId = state.app.thread_id,
+    threadId = ctx.thread_id,
     input = input,
     cwd = util.cwd(),
     model = M.config.model,
   }, function(req_err, result)
     if req_err then
-      state.app.running = false
+      ctx.running = false
       logger.error('turn/start failed:', req_err.message or util.text_content(req_err))
       return
     end
-    state.app.running = true
-    state.app.active_turn_id = result and result.turn and result.turn.id or state.app.active_turn_id
+    ctx.running = true
+    ctx.active_turn_id = result and result.turn and result.turn.id or ctx.active_turn_id
   end)
 end
 
-local function flush_pending_sends()
-  if not state.app.thread_id or not state.app.pending_sends or #state.app.pending_sends == 0 then
+local function flush_pending_sends(ctx)
+  ctx = ctx or app_context()
+  if not ctx.thread_id or not ctx.pending_sends or #ctx.pending_sends == 0 then
     return
   end
-  local pending = state.app.pending_sends
-  state.app.pending_sends = {}
+  local pending = ctx.pending_sends
+  ctx.pending_sends = {}
   for _, input in ipairs(pending) do
-    dispatch_turn(input)
+    dispatch_turn(input, ctx)
   end
 end
 
-local function inject_items(items, callback)
+local function inject_items(items, callback, ctx)
+  ctx = ctx or app_context()
   callback = callback or function() end
-  if not state.app.client or not state.app.thread_id or not items or #items == 0 then
+  if not state.app.client or not ctx.thread_id or not items or #items == 0 then
     callback()
     return
   end
 
   state.app.client:request('thread/inject_items', {
-    threadId = state.app.thread_id,
+    threadId = ctx.thread_id,
     items = items,
   }, function(err)
     if err then
@@ -192,13 +217,14 @@ local function inject_items(items, callback)
   end)
 end
 
-local function flush_pending_injections()
-  if not state.app.thread_id or not state.app.pending_injections or #state.app.pending_injections == 0 then
+local function flush_pending_injections(ctx)
+  ctx = ctx or app_context()
+  if not ctx.thread_id or not ctx.pending_injections or #ctx.pending_injections == 0 then
     return
   end
-  local pending = state.app.pending_injections
-  state.app.pending_injections = {}
-  inject_items(pending)
+  local pending = ctx.pending_injections
+  ctx.pending_injections = {}
+  inject_items(pending, nil, ctx)
 end
 
 local function flush_ready(ok, err)
@@ -214,27 +240,32 @@ local function on_notification(msg)
   local params = msg.params or {}
 
   if method == 'turn/started' then
-    state.app.running = true
-    state.app.active_turn_id = params.turn and params.turn.id or state.app.active_turn_id
+    local ctx = context_for_thread(params.threadId)
+    ctx.running = true
+    ctx.active_turn_id = params.turn and params.turn.id or ctx.active_turn_id
   elseif method == 'turn/completed' then
-    state.app.running = false
-    state.app.active_turn_id = nil
+    local ctx = context_for_thread(params.threadId)
+    ctx.running = false
+    ctx.active_turn_id = nil
   elseif method == 'thread/started' then
     local thread = params.thread or {}
-    state.app.thread_id = thread.id or state.app.thread_id
-    state.app.session_id = thread.sessionId or state.app.session_id
+    local session = state.claim_thread_session and state.claim_thread_session(thread.id) or nil
+    local ctx = app_context(session)
+    ctx.thread_id = thread.id or ctx.thread_id
+    ctx.session_id = thread.sessionId or ctx.session_id
     if terminal_ui() then
-      flush_pending_injections()
-      flush_pending_sends()
+      flush_pending_injections(ctx)
+      flush_pending_sends(ctx)
     end
   elseif method == 'thread/closed' then
-    if params.threadId == state.app.thread_id then
-      state.app.thread_id = nil
-      state.app.session_id = nil
-      state.app.active_turn_id = nil
-      state.app.running = false
-      state.app.pending_sends = {}
-      state.app.pending_injections = {}
+    local ctx = context_for_thread(params.threadId)
+    if params.threadId == ctx.thread_id then
+      ctx.thread_id = nil
+      ctx.session_id = nil
+      ctx.active_turn_id = nil
+      ctx.running = false
+      ctx.pending_sends = {}
+      ctx.pending_injections = {}
     end
   elseif method == 'app/list/updated' then
     state.app.apps = params.data or {}
@@ -274,8 +305,9 @@ local function on_request(msg, respond)
   end
 end
 
-local function start_thread(callback)
-  if state.app.thread_id then
+local function start_thread(callback, ctx)
+  ctx = ctx or app_context()
+  if ctx.thread_id then
     callback(true)
     return
   end
@@ -308,9 +340,9 @@ local function start_thread(callback)
       return
     end
     local thread = result and result.thread or {}
-    state.app.thread_id = thread.id
-    state.app.session_id = thread.sessionId or thread.id
-    if not state.app.thread_id then
+    ctx.thread_id = thread.id
+    ctx.session_id = thread.sessionId or thread.id
+    if not ctx.thread_id then
       callback(false, { message = 'thread/start did not return a thread id' })
       return
     end
@@ -342,6 +374,7 @@ local function connect_ws_client(listen_url, callback)
         state.app.running = false
         state.app.pending_sends = {}
         state.app.pending_injections = {}
+        clear_all_session_contexts()
         M.starting = false
       end,
     }
@@ -398,7 +431,7 @@ local function start_websocket(callback)
         if terminal_ui() then
           callback(true)
         else
-          start_thread(callback)
+          start_thread(callback, app_context())
         end
       end)
     end)
@@ -420,12 +453,13 @@ function M.start(callback)
   end
 
   if state.app.client and state.app.client:is_running() and state.app.initialized then
+    local ctx = app_context()
     if terminal_ui() then
       callback(true)
-    elseif state.app.thread_id then
+    elseif ctx.thread_id then
       callback(true)
     else
-      start_thread(callback)
+      start_thread(callback, ctx)
     end
     return
   end
@@ -471,6 +505,7 @@ function M.start(callback)
       state.app.running = false
       state.app.pending_sends = {}
       state.app.pending_injections = {}
+      clear_all_session_contexts()
       M.starting = false
       ui.append(('app-server exited with code %s'):format(tostring(code)))
     end,
@@ -515,7 +550,7 @@ function M.start(callback)
       end
       M.starting = false
       flush_ready(thread_ok, thread_err)
-    end)
+    end, app_context())
   end)
 end
 
@@ -537,16 +572,18 @@ function M.stop()
   state.app.terminal_opened = false
   state.app.pending_sends = {}
   state.app.pending_injections = {}
+  clear_all_session_contexts()
   M.starting = false
   M.ready_callbacks = {}
 end
 
 function M.new_thread(callback)
-  state.app.thread_id = nil
-  state.app.session_id = nil
-  state.app.active_turn_id = nil
-  state.app.running = false
-  state.app.items = {}
+  local ctx = app_context()
+  ctx.thread_id = nil
+  ctx.session_id = nil
+  ctx.active_turn_id = nil
+  ctx.running = false
+  ctx.items = {}
   if not terminal_ui() then
     ui.clear()
   end
@@ -575,38 +612,40 @@ function M.send(prompt, opts)
       return
     end
 
+    local ctx = app_context(opts.session)
     if terminal_ui() then
       if opts.submit == false then
         terminal.insert(prompt, vim.tbl_extend('force', opts, { focus = false }))
-        M.open_terminal({ focus = false })
-      elseif state.app.thread_id then
-        local input = build_input(prompt, opts)
+        M.open_terminal({ focus = false, session = opts.session })
+      elseif ctx.thread_id then
+        local input = build_input(prompt, opts, ctx)
         local prompt_text = input[1] and input[1].text or prompt
         M.inject_prompt_references(prompt_text, function()
-          dispatch_turn(input)
-        end)
+          dispatch_turn(input, ctx)
+        end, ctx)
       else
-        local input = build_input(prompt, opts)
+        local input = build_input(prompt, opts, ctx)
         local prompt_text = input[1] and input[1].text or prompt
         for _, item in ipairs(prompt_builder.injection_items_from_text(prompt_text)) do
-          table.insert(state.app.pending_injections, item)
+          table.insert(ctx.pending_injections, item)
         end
-        table.insert(state.app.pending_sends, input)
-        M.open_terminal()
+        table.insert(ctx.pending_sends, input)
+        M.open_terminal({ session = opts.session })
       end
       return
     end
 
-    local input, display_context = build_input(prompt, opts)
+    local input, display_context = build_input(prompt, opts, ctx)
     ui.render_user_input(prompt, display_context)
     local prompt_text = input[1] and input[1].text or prompt
     M.inject_prompt_references(prompt_text, function()
-      dispatch_turn(input)
-    end)
+      dispatch_turn(input, ctx)
+    end, ctx)
   end)
 end
 
-function M.inject_prompt_references(prompt_text, callback)
+function M.inject_prompt_references(prompt_text, callback, ctx)
+  ctx = ctx or app_context()
   callback = callback or function() end
   local items = prompt_builder.injection_items_from_text(prompt_text)
   if not items or #items == 0 then
@@ -614,25 +653,26 @@ function M.inject_prompt_references(prompt_text, callback)
     return
   end
 
-  if state.app.thread_id then
-    inject_items(items, callback)
+  if ctx.thread_id then
+    inject_items(items, callback, ctx)
     return
   end
 
   for _, item in ipairs(items) do
-    table.insert(state.app.pending_injections, item)
+    table.insert(ctx.pending_injections, item)
   end
   callback()
 end
 
 function M.interrupt()
-  if not state.app.client or not state.app.thread_id or not state.app.active_turn_id then
+  local ctx = app_context()
+  if not state.app.client or not ctx.thread_id or not ctx.active_turn_id then
     logger.warn 'No active Codex turn to interrupt'
     return
   end
   state.app.client:request('turn/interrupt', {
-    threadId = state.app.thread_id,
-    turnId = state.app.active_turn_id,
+    threadId = ctx.thread_id,
+    turnId = ctx.active_turn_id,
   }, function(err)
     if err then
       logger.error('turn/interrupt failed:', err.message or util.text_content(err))
@@ -648,7 +688,8 @@ function M.add_file(path, start_line, end_line)
   end
 
   local name = util.relative_path(expanded)
-  table.insert(state.app.pending_context, {
+  local ctx = app_context()
+  table.insert(ctx.pending_context, {
     type = 'mention',
     name = name,
     path = expanded,
@@ -656,7 +697,7 @@ function M.add_file(path, start_line, end_line)
     line_start = start_line,
     line_end = end_line,
   })
-  logger.info('Added Codex context:', context_label(state.app.pending_context[#state.app.pending_context]))
+  logger.info('Added Codex context:', context_label(ctx.pending_context[#ctx.pending_context]))
   return true
 end
 
@@ -668,8 +709,9 @@ function M.open_terminal(opts)
   if not state.app.listen_url then
     return
   end
+  local ctx = app_context(opts.session)
   if terminal.open_remote(state.app.listen_url, nil, opts) then
-    state.app.terminal_opened = true
+    ctx.terminal_opened = true
   end
 end
 
@@ -685,7 +727,8 @@ function M.add_app(app)
   if not app or not app.id then
     return false
   end
-  table.insert(state.app.pending_context, {
+  local ctx = app_context()
+  table.insert(ctx.pending_context, {
     type = 'mention',
     name = app.name or app.id,
     path = 'app://' .. app.id,
@@ -699,7 +742,8 @@ function M.add_skill(skill)
   if not skill or not skill.name or not skill.path then
     return false
   end
-  table.insert(state.app.pending_context, {
+  local ctx = app_context()
+  table.insert(ctx.pending_context, {
     type = 'skill',
     name = skill.name,
     path = skill.path,
@@ -740,7 +784,8 @@ function M.list_apps(callback)
       callback(nil, err)
       return
     end
-    state.app.client:request('app/list', { limit = 100, threadId = state.app.thread_id, forceRefetch = false }, function(req_err, result)
+    local ctx = app_context()
+    state.app.client:request('app/list', { limit = 100, threadId = ctx.thread_id, forceRefetch = false }, function(req_err, result)
       if req_err then
         callback(nil, req_err)
         return

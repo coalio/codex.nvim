@@ -173,7 +173,7 @@ function M.terminal(prompt, opts, config)
   if opts.raw then
     return text
   end
-  local pending = vim.deepcopy(state.app.pending_context or {})
+  local pending = vim.deepcopy(opts.pending_context or state.app.pending_context or {})
   local prefixes = {}
   local context_lines = {}
 
@@ -216,7 +216,13 @@ function M.terminal(prompt, opts, config)
     text = text .. '\n\nAdditional Neovim context:\n' .. table.concat(context_lines, '\n')
   end
 
-  state.app.pending_context = {}
+  if opts.pending_context then
+    for index = #opts.pending_context, 1, -1 do
+      table.remove(opts.pending_context, index)
+    end
+  else
+    state.app.pending_context = {}
+  end
   return text
 end
 

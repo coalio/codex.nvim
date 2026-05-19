@@ -21,6 +21,72 @@ local autoscroll = {
 }
 local attach_autoscroll
 
+local function active_session()
+  if type(state.active_session) == 'function' then
+    return state.active_session()
+  end
+  return nil
+end
+
+local function ensure_session(opts)
+  if type(state.ensure_session) == 'function' then
+    return state.ensure_session(opts)
+  end
+  return nil
+end
+
+local function sync_active_session()
+  if type(state.sync_active_session) == 'function' then
+    return state.sync_active_session()
+  end
+  return nil
+end
+
+local function session_requested(session)
+  if session then
+    return session.requested == true
+  end
+  return M.requested == true
+end
+
+local function session_remote(session)
+  return session and session.remote or M.remote
+end
+
+local function session_pending_submits(session)
+  return session and session.pending_submits or M.pending_submits
+end
+
+local function session_pending_inserts(session)
+  return session and session.pending_inserts or M.pending_inserts
+end
+
+local function set_session_buf(session, buf)
+  if session then
+    session.buf = buf
+    sync_active_session()
+  else
+    state.buf = buf
+  end
+end
+
+local function set_session_job(session, job)
+  if session then
+    session.job = job
+    sync_active_session()
+  else
+    state.job = job
+  end
+end
+
+local function session_buf(session)
+  return session and session.buf or state.buf
+end
+
+local function session_job(session)
+  return session and session.job or state.job
+end
+
 function M.setup(config)
   M.config = config
 
@@ -81,11 +147,30 @@ local function create_clean_buf(config)
   return buf
 end
 
-local function open_window(config, cwd)
+local function picker_enabled(config)
+  local picker = config and config.session_picker
+  return picker == nil or picker.enabled ~= false
+end
+
+local function picker_width(config)
+  local picker = config and config.session_picker or {}
+  local width = tonumber(picker.width) or 2
+  return math.max(1, math.floor(width))
+end
+
+local function content_width(config)
   local width = math.floor(vim.o.columns * config.width)
+  if picker_enabled(config) then
+    width = width - picker_width(config)
+  end
+  return math.max(1, width)
+end
+
+local function open_window(config, cwd)
+  local width = content_width(config)
   local height = math.floor(vim.o.lines * config.height)
   local row = math.floor((vim.o.lines - height) / 2)
-  local col = math.floor((vim.o.columns - width) / 2)
+  local col = math.floor((vim.o.columns - width - (picker_enabled(config) and picker_width(config) or 0)) / 2)
 
   local styles = {
     single = {
@@ -139,7 +224,7 @@ local function open_panel(config, cwd)
   vim.cmd 'botright vertical split'
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, state.buf)
-  vim.api.nvim_win_set_width(win, math.floor(vim.o.columns * config.width))
+  vim.api.nvim_win_set_width(win, content_width(config))
   state.win = win
   configure_terminal_window(state.win, cwd)
 end
@@ -150,6 +235,144 @@ local function current_win()
     return win
   end
   return nil
+end
+
+local function close_picker()
+  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
+    pcall(vim.api.nvim_win_close, state.picker_win, true)
+  end
+  state.picker_win = nil
+end
+
+local function ensure_picker_buf()
+  if state.picker_buf and vim.api.nvim_buf_is_valid(state.picker_buf) then
+    return state.picker_buf
+  end
+
+  local buf = vim.api.nvim_create_buf(false, false)
+  state.picker_buf = buf
+  vim.api.nvim_buf_set_option(buf, 'bufhidden', 'hide')
+  vim.api.nvim_buf_set_option(buf, 'swapfile', false)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(buf, 'filetype', 'codex-sessions')
+  vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', [[<cmd>lua require('codex.terminal').select_session_at_cursor()<CR>]], {
+    noremap = true,
+    silent = true,
+  })
+  vim.api.nvim_buf_set_keymap(buf, 'n', '<LeftMouse>', [[<cmd>lua require('codex.terminal').select_session_at_cursor()<CR>]], {
+    noremap = true,
+    silent = true,
+  })
+  return buf
+end
+
+local function configure_picker_window(win, config)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  pcall(vim.api.nvim_win_set_width, win, picker_width(config))
+  pcall(vim.api.nvim_win_set_option, win, 'number', false)
+  pcall(vim.api.nvim_win_set_option, win, 'relativenumber', false)
+  pcall(vim.api.nvim_win_set_option, win, 'signcolumn', 'no')
+  pcall(vim.api.nvim_win_set_option, win, 'foldcolumn', '0')
+  pcall(vim.api.nvim_win_set_option, win, 'wrap', false)
+  pcall(vim.api.nvim_win_set_option, win, 'cursorline', false)
+  pcall(vim.api.nvim_win_set_option, win, 'winfixwidth', true)
+  pcall(vim.api.nvim_win_set_option, win, 'statuscolumn', '')
+end
+
+local function render_picker()
+  if not state.picker_buf or not vim.api.nvim_buf_is_valid(state.picker_buf) then
+    return
+  end
+
+  local lines = {}
+  for _, id in ipairs(state.session_order or {}) do
+    table.insert(lines, tostring(id))
+  end
+  if #lines == 0 then
+    lines = { '' }
+  end
+
+  local was_modifiable = vim.api.nvim_buf_get_option(state.picker_buf, 'modifiable')
+  vim.api.nvim_buf_set_option(state.picker_buf, 'modifiable', true)
+  vim.api.nvim_buf_set_lines(state.picker_buf, 0, -1, false, lines)
+  vim.api.nvim_buf_clear_namespace(state.picker_buf, -1, 0, -1)
+  vim.cmd 'highlight default link CodexSessionActive TabLineSel'
+  vim.cmd 'highlight default link CodexSessionInactive TabLine'
+  for index, id in ipairs(state.session_order or {}) do
+    local group = id == state.active_session_id and 'CodexSessionActive' or 'CodexSessionInactive'
+    vim.api.nvim_buf_add_highlight(state.picker_buf, -1, group, index - 1, 0, -1)
+  end
+  vim.api.nvim_buf_set_option(state.picker_buf, 'modifiable', was_modifiable)
+end
+
+local function open_float_picker(config)
+  local buf = ensure_picker_buf()
+  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
+    vim.api.nvim_win_set_buf(state.picker_win, buf)
+    configure_picker_window(state.picker_win, config)
+    return
+  end
+
+  local ok, win_config = pcall(vim.api.nvim_win_get_config, state.win)
+  if not ok or not win_config or win_config.relative == '' then
+    return
+  end
+
+  local border_offset = config.border == 'none' and 0 or 2
+  state.picker_win = vim.api.nvim_open_win(buf, false, {
+    relative = 'editor',
+    width = picker_width(config),
+    height = win_config.height,
+    row = win_config.row,
+    col = win_config.col + win_config.width + border_offset,
+    style = 'minimal',
+  })
+  configure_picker_window(state.picker_win, config)
+end
+
+local function open_panel_picker(config)
+  local buf = ensure_picker_buf()
+  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
+    vim.api.nvim_win_set_buf(state.picker_win, buf)
+    configure_picker_window(state.picker_win, config)
+    return
+  end
+
+  local restore_to = current_win()
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    return
+  end
+  vim.api.nvim_set_current_win(state.win)
+  vim.cmd(('rightbelow vertical %dnew'):format(picker_width(config)))
+  state.picker_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(state.picker_win, buf)
+  configure_picker_window(state.picker_win, config)
+  if state.win and vim.api.nvim_win_is_valid(state.win) then
+    vim.api.nvim_set_current_win(state.win)
+  end
+  if restore_to and restore_to ~= state.picker_win and vim.api.nvim_win_is_valid(restore_to) then
+    vim.api.nvim_set_current_win(restore_to)
+  end
+end
+
+local function ensure_picker(config)
+  if not picker_enabled(config) or not state.has_sessions or not state.has_sessions() then
+    close_picker()
+    return
+  end
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) then
+    close_picker()
+    return
+  end
+
+  if config.panel then
+    open_panel_picker(config)
+  else
+    open_float_picker(config)
+  end
+  render_picker()
 end
 
 local function codex_focused()
@@ -305,9 +528,12 @@ attach_autoscroll = function(buf)
   })
 end
 
-local function launch_cwd(opts)
+local function launch_cwd(opts, session)
   if opts and opts.cwd then
     return opts.cwd
+  end
+  if session and session.cwd and (session.job or (state.win and vim.api.nvim_win_is_valid(state.win))) then
+    return session.cwd
   end
   if M.cwd and (state.job or (state.win and vim.api.nvim_win_is_valid(state.win))) then
     return M.cwd
@@ -346,26 +572,30 @@ local function is_clean_start_buf(buf)
   return vim.api.nvim_buf_get_option(buf, 'buftype') == ''
 end
 
-local function ensure_start_buf(config)
-  if state.job then
-    if not is_buf_reusable(state.buf) then
-      state.buf = create_clean_buf(config)
+local function ensure_start_buf(config, session)
+  local buf = session_buf(session)
+  if session_job(session) then
+    if not is_buf_reusable(buf) then
+      set_session_buf(session, create_clean_buf(config))
     end
     return
   end
 
-  if not is_clean_start_buf(state.buf) then
-    state.buf = create_clean_buf(config)
+  if not is_clean_start_buf(buf) then
+    set_session_buf(session, create_clean_buf(config))
   end
 end
 
-local function ensure_window(config, cwd)
-  ensure_start_buf(config)
+local function ensure_window(config, cwd, session)
+  session = session or active_session()
+  ensure_start_buf(config, session)
+  sync_active_session()
 
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_set_current_win(state.win)
     vim.api.nvim_win_set_buf(state.win, state.buf)
     configure_terminal_window(state.win, cwd)
+    ensure_picker(config)
     return
   end
 
@@ -374,11 +604,12 @@ local function ensure_window(config, cwd)
   else
     open_window(config, cwd)
   end
+  ensure_picker(config)
 end
 
 local function set_message(lines)
   local config = M.config
-  ensure_window(config, M.cwd)
+  ensure_window(config, M.cwd, active_session())
   local was_modifiable = vim.api.nvim_buf_get_option(state.buf, 'modifiable')
   vim.api.nvim_buf_set_option(state.buf, 'modifiable', true)
   vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines or { '' })
@@ -393,12 +624,21 @@ local function append_cwd_arg(cmd_args, cwd)
   end
 end
 
-local function build_cmd_args(config, remote, opts, cwd)
+local function append_launch_flags(cmd_args, config, opts, session)
+  table.insert(cmd_args, '--config')
+  table.insert(cmd_args, 'tui.vim_mode_default=true')
+  if (session and session.yolo) or (opts and opts.yolo) or (config and config.yolo) then
+    table.insert(cmd_args, '--dangerously-bypass-approvals-and-sandbox')
+  end
+end
+
+local function build_cmd_args(config, remote, opts, cwd, session)
   opts = opts or {}
   local cmd_args = util.normalize_cmd(config.cmd)
   if remote and remote.url then
     if remote.resume_last then
       table.insert(cmd_args, 'resume')
+      append_launch_flags(cmd_args, config, opts, session)
       table.insert(cmd_args, '--last')
       table.insert(cmd_args, '--remote')
       table.insert(cmd_args, remote.url)
@@ -409,6 +649,7 @@ local function build_cmd_args(config, remote, opts, cwd)
       append_cwd_arg(cmd_args, cwd)
       return cmd_args
     else
+      append_launch_flags(cmd_args, config, opts, session)
       table.insert(cmd_args, '--remote')
       table.insert(cmd_args, remote.url)
       append_cwd_arg(cmd_args, cwd)
@@ -418,7 +659,10 @@ local function build_cmd_args(config, remote, opts, cwd)
 
   if opts.resume_last then
     table.insert(cmd_args, 'resume')
+    append_launch_flags(cmd_args, config, opts, session)
     table.insert(cmd_args, '--last')
+  else
+    append_launch_flags(cmd_args, config, opts, session)
   end
   if config.model then
     table.insert(cmd_args, '-m')
@@ -428,44 +672,53 @@ local function build_cmd_args(config, remote, opts, cwd)
   return cmd_args
 end
 
-local function paste_to_terminal(text, submit)
-  if not state.job or not text or text == '' then
+local function paste_to_terminal(text, submit, session)
+  session = session or active_session()
+  local job = session_job(session)
+  if not job or not text or text == '' then
     return false
   end
 
-  local ok = pcall(vim.fn.chansend, state.job, '\027[200~' .. text .. '\027[201~')
+  local ok = pcall(vim.fn.chansend, job, '\027[200~' .. text .. '\027[201~')
   if not ok then
     return false
   end
 
   if submit then
     vim.defer_fn(function()
-      if state.job then
-        pcall(vim.fn.chansend, state.job, '\r')
+      local active_job = session_job(session)
+      if active_job then
+        pcall(vim.fn.chansend, active_job, '\r')
       end
     end, 20)
   end
   return true
 end
 
-function M.flush_pending()
-  if not state.job or (#M.pending_submits == 0 and #M.pending_inserts == 0) then
+function M.flush_pending(session)
+  session = session or active_session()
+  local pending_inserts = session_pending_inserts(session)
+  local pending_submits = session_pending_submits(session)
+  if not session_job(session) or (#pending_submits == 0 and #pending_inserts == 0) then
     return
   end
 
-  local pending_inserts = M.pending_inserts
-  local pending_submits = M.pending_submits
-  M.pending_inserts = {}
-  M.pending_submits = {}
+  if session then
+    session.pending_inserts = {}
+    session.pending_submits = {}
+  else
+    M.pending_inserts = {}
+    M.pending_submits = {}
+  end
   vim.defer_fn(function()
     for _, text in ipairs(pending_inserts) do
-      if state.job then
-        paste_to_terminal(text, false)
+      if session_job(session) then
+        paste_to_terminal(text, false, session)
       end
     end
     for _, text in ipairs(pending_submits) do
-      if state.job then
-        paste_to_terminal(text, true)
+      if session_job(session) then
+        paste_to_terminal(text, true, session)
       end
     end
   end, 300)
@@ -474,9 +727,23 @@ end
 function M.open(opts)
   opts = opts or {}
   local config = M.config
-  local cwd = launch_cwd(opts)
+  local session = opts.session or active_session()
+  if opts.new_session or not session then
+    session = state.create_session and state.create_session({ yolo = opts.yolo }) or nil
+  elseif state.activate_session and session.id then
+    state.activate_session(session.id)
+  end
+  session = session or active_session()
+  local cwd = launch_cwd(opts, session)
   M.cwd = cwd
   M.requested = true
+  if session then
+    session.cwd = cwd
+    session.requested = true
+    if opts.yolo then
+      session.yolo = true
+    end
+  end
   local restore_to = opts.focus == false and current_win() or nil
 
   config.cmd = util.resolve_cmd(config.cmd)
@@ -487,8 +754,8 @@ function M.open(opts)
         if success then
           M.open(opts)
         else
-          if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
-            state.buf = create_clean_buf(config)
+          if not session_buf(session) or not vim.api.nvim_buf_is_valid(session_buf(session)) then
+            set_session_buf(session, create_clean_buf(config))
           end
           vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, {
             'Autoinstall cancelled or failed.',
@@ -496,19 +763,15 @@ function M.open(opts)
             'You can install manually with:',
             '  npm install -g @openai/codex',
           })
-          if config.panel then
-            open_panel(config, cwd)
-          else
-            open_window(config, cwd)
-          end
+          ensure_window(config, cwd, session)
           restore_win(restore_to)
         end
       end)
       return
     end
 
-    if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
-      state.buf = create_clean_buf(config)
+    if not session_buf(session) or not vim.api.nvim_buf_is_valid(session_buf(session)) then
+      set_session_buf(session, create_clean_buf(config))
     end
     vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, {
       'Codex CLI not found, autoinstall disabled.',
@@ -516,18 +779,14 @@ function M.open(opts)
       'Install with:',
       '  npm install -g @openai/codex',
     })
-    if config.panel then
-      open_panel(config, cwd)
-    else
-      open_window(config, cwd)
-    end
+    ensure_window(config, cwd, session)
     restore_win(restore_to)
     return
   end
 
-  ensure_window(config, cwd)
+  ensure_window(config, cwd, session)
 
-  if state.job then
+  if session_job(session) then
     if opts.insert then
       focus_window(true)
     end
@@ -535,10 +794,10 @@ function M.open(opts)
     return
   end
 
-  local cmd_args = build_cmd_args(config, M.remote, opts, cwd)
+  local cmd_args = build_cmd_args(config, session_remote(session), opts, cwd, session)
 
   if config.use_buffer then
-    state.job = vim.fn.jobstart(cmd_args, {
+    set_session_job(session, vim.fn.jobstart(cmd_args, {
       cwd = cwd,
       env = util.codex_env(),
       stdout_buffered = true,
@@ -563,36 +822,44 @@ function M.open(opts)
         end
       end,
       on_exit = function(_, code)
-        state.job = nil
+        set_session_job(session, nil)
         vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { ('[Codex exit: %d]'):format(code) })
       end,
-    })
+    }))
   else
     local ok, job_or_err = pcall(vim.fn.termopen, cmd_args, {
       cwd = cwd,
       env = util.codex_env(),
       on_exit = function(_, code)
-        state.job = nil
-        state.app.terminal_opened = false
-        if code ~= 0 and M.remote then
-          state.app.thread_id = nil
-          state.app.session_id = nil
-          M.remote = nil
-          M.pending_submits = {}
-          M.pending_inserts = {}
+        set_session_job(session, nil)
+        local app_ctx = state.app_context and state.app_context(session) or state.app
+        app_ctx.terminal_opened = false
+        if code ~= 0 and session_remote(session) then
+          app_ctx.thread_id = nil
+          app_ctx.session_id = nil
+          if session then
+            session.remote = nil
+            session.pending_submits = {}
+            session.pending_inserts = {}
+          else
+            M.remote = nil
+            M.pending_submits = {}
+            M.pending_inserts = {}
+          end
         end
+        M.close_session(session and session.id, { from_exit = true })
       end,
     })
     if ok and type(job_or_err) == 'number' and job_or_err > 0 then
-      state.job = job_or_err
+      set_session_job(session, job_or_err)
       configure_terminal_window(state.win, cwd)
-      M.flush_pending()
+      M.flush_pending(session)
       if opts.insert then
         focus_window(true)
       end
     else
-      state.job = nil
-      state.buf = nil
+      set_session_job(session, nil)
+      set_session_buf(session, nil)
       set_message { 'Codex terminal failed to start.', tostring(job_or_err) }
     end
   end
@@ -601,50 +868,82 @@ function M.open(opts)
 end
 
 function M.open_remote(url, thread_id, opts)
-  if not M.requested then
+  opts = opts or {}
+  local session = opts.session or active_session()
+  if not session_requested(session) then
     return false
   end
-  M.remote = {
+  local remote = {
     url = url,
     thread_id = thread_id,
-    resume_last = opts and opts.resume_last == true,
+    resume_last = opts.resume_last == true,
   }
-  M.open(opts)
+  if session then
+    session.remote = remote
+    if state.queue_thread_session then
+      state.queue_thread_session(session)
+    end
+  else
+    M.remote = remote
+  end
+  M.open(vim.tbl_extend('force', opts, { session = session }))
   return true
 end
 
 function M.send(prompt, opts)
-  local text = prompt_builder.terminal(prompt, opts, M.config)
+  opts = opts or {}
+  local session = opts.session or active_session()
+  local text = prompt_builder.terminal(prompt, vim.tbl_extend('force', opts, {
+    pending_context = state.app_context and state.app_context(session).pending_context or nil,
+  }), M.config)
   if text == '' then
     return false
   end
 
   M.requested = true
-  if paste_to_terminal(text, true) then
+  if session then
+    session.requested = true
+  end
+  if paste_to_terminal(text, true, session) then
     return true
   end
 
-  table.insert(M.pending_submits, text)
-  if M.remote and M.remote.url then
-    M.open(opts)
+  if session then
+    table.insert(session.pending_submits, text)
+  else
+    table.insert(M.pending_submits, text)
+  end
+  local remote = session_remote(session)
+  if remote and remote.url then
+    M.open(vim.tbl_extend('force', opts, { session = session }))
   end
   return true
 end
 
 function M.insert(prompt, opts)
+  opts = opts or {}
+  local session = opts.session or active_session()
   local text = prompt_builder.input_reference(prompt, opts, M.config)
   if text == '' then
     return false
   end
 
   M.requested = true
-  if paste_to_terminal(text, false) then
+  if session then
+    session.requested = true
+  end
+  if paste_to_terminal(text, false, session) then
     return true
   end
 
-  table.insert(M.pending_inserts, text)
-  if M.remote and M.remote.url then
-    M.open(opts)
+  if session then
+    table.insert(session.pending_inserts, text)
+  else
+    table.insert(M.pending_inserts, text)
+  end
+  local remote = session_remote(session)
+  if remote and remote.url then
+    M.open(vim.tbl_extend('force', opts, { session = session }))
   end
   return true
 end
@@ -710,11 +1009,26 @@ end
 
 function M.open_placeholder(opts)
   opts = opts or {}
+  local session = opts.session
+  if not session and opts.new_session and state.create_session then
+    session = state.create_session({ yolo = opts.yolo })
+  end
+  session = session or active_session() or ensure_session({ yolo = opts.yolo })
+  if state.activate_session and session and session.id then
+    state.activate_session(session.id)
+  end
   local cwd = opts.cwd or util.cwd()
   M.cwd = cwd
+  if session then
+    session.cwd = cwd
+    session.requested = true
+    if opts.yolo then
+      session.yolo = true
+    end
+  end
   local restore_to = opts.focus == false and current_win() or nil
   M.requested = true
-  ensure_window(M.config, cwd)
+  ensure_window(M.config, cwd, session)
   if opts.insert then
     focus_window(true)
   end
@@ -732,11 +1046,19 @@ end
 
 function M.show_error(message)
   M.requested = true
-  ensure_window(M.config, M.cwd)
+  local session = active_session() or ensure_session()
+  if session then
+    session.requested = true
+  end
+  ensure_window(M.config, M.cwd, session)
   set_message { 'Codex failed to start.', tostring(message or 'unknown error') }
 end
 
-function M.is_requested()
+function M.is_requested(session)
+  session = session or active_session()
+  if session then
+    return session.requested
+  end
   return M.requested
 end
 
@@ -744,6 +1066,17 @@ function M.close()
   M.requested = false
   M.pending_submits = {}
   M.pending_inserts = {}
+  local session = active_session()
+  if session then
+    session.requested = false
+  end
+  for _, id in ipairs(state.session_order or {}) do
+    local entry = state.sessions and state.sessions[id] or nil
+    if entry then
+      entry.requested = false
+    end
+  end
+  close_picker()
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_close(state.win, true)
   end
@@ -759,6 +1092,96 @@ function M.toggle()
   else
     M.open()
   end
+end
+
+function M.select_session(id, opts)
+  opts = opts or {}
+  local session = state.activate_session and state.activate_session(tonumber(id)) or nil
+  if not session then
+    return false
+  end
+
+  if state.win and vim.api.nvim_win_is_valid(state.win) then
+    vim.api.nvim_win_set_buf(state.win, session.buf)
+    configure_terminal_window(state.win, session.cwd)
+    ensure_picker(M.config)
+    if opts.focus ~= false then
+      focus_window(opts.insert ~= false)
+    end
+  else
+    M.open(vim.tbl_extend('force', opts, { session = session }))
+  end
+  render_picker()
+  return true
+end
+
+function M.select_session_at_cursor()
+  if not state.picker_buf or not vim.api.nvim_buf_is_valid(state.picker_buf) then
+    return false
+  end
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local line = vim.api.nvim_buf_get_lines(state.picker_buf, row - 1, row, false)[1]
+  local id = tonumber(line)
+  if not id then
+    return false
+  end
+  return M.select_session(id, { focus = true })
+end
+
+function M.new_session(opts)
+  opts = opts or {}
+  local session = state.create_session and state.create_session({ yolo = opts.yolo }) or nil
+  return M.open(vim.tbl_extend('force', opts, {
+    new_session = false,
+    session = session,
+    focus = opts.focus ~= false,
+    insert = opts.insert ~= false,
+  }))
+end
+
+function M.yolo(opts)
+  opts = opts or {}
+  return M.new_session(vim.tbl_extend('force', opts, { yolo = true }))
+end
+
+function M.close_session(id, opts)
+  opts = opts or {}
+  local session = id and state.sessions and state.sessions[tonumber(id)] or active_session()
+  if not session then
+    return false
+  end
+
+  local was_active = session.id == state.active_session_id
+  local old_buf = session.buf
+  if session.job and not opts.from_exit then
+    pcall(vim.fn.jobstop, session.job)
+  end
+
+  if state.remove_session then
+    state.remove_session(session.id)
+  end
+  render_picker()
+
+  local next_session = active_session()
+  if was_active and next_session and state.win and vim.api.nvim_win_is_valid(state.win) then
+    vim.api.nvim_win_set_buf(state.win, next_session.buf)
+    configure_terminal_window(state.win, next_session.cwd)
+    ensure_picker(M.config)
+  elseif not next_session then
+    close_picker()
+    if state.win and vim.api.nvim_win_is_valid(state.win) then
+      pcall(vim.api.nvim_win_close, state.win, true)
+    end
+    state.win = nil
+  else
+    ensure_picker(M.config)
+  end
+
+  if old_buf and vim.api.nvim_buf_is_valid(old_buf) then
+    pcall(vim.api.nvim_buf_delete, old_buf, { force = true })
+  end
+
+  return true
 end
 
 return M
