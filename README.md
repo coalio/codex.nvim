@@ -8,7 +8,7 @@ The result is a terminal-first workflow with IDE context. Visual selections are 
 
 - Terminal UI backed by a local App Server WebSocket transport.
 - The terminal pane opens immediately; App Server startup and TUI connection happen asynchronously.
-- Multiple Codex terminal sessions can share the pane, with a narrow numbered vertical picker on the right.
+- Multiple Codex terminal sessions can share the pane, with a compact right-side picker that expands from numbered labels to named labels when its title is clicked.
 - Visual/range `:CodexSend` without a second prompt; no-argument sends insert an `@file#Lx-Ly` reference into the Codex prompt and leave the user in control.
 - Submit-time hidden source injection through `thread/inject_items` for visible `@file#Lx-Ly` or `file#Lx-Ly` prompt references.
 - Active-buffer context on Neovim-originated prompts.
@@ -173,7 +173,7 @@ require('codex').setup({
   },
   session_picker = {
     enabled = true,
-    width = 24,
+    width = 24, -- expanded width; collapsed width fits "+ Codex Sessions"
   },
   app_server = {
     ui = 'terminal',
