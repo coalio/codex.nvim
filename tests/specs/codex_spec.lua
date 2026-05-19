@@ -630,6 +630,7 @@ describe('codex.nvim', function()
     local exits = {}
     local sent = {}
     local mouse_line = 3
+    local mouse_win = nil
     local function listed_empty_buffers()
       local count = 0
       for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
@@ -659,7 +660,7 @@ describe('codex.nvim', function()
         return #text
       end,
       getmousepos = function()
-        return { winid = require('codex.state').picker_win, line = mouse_line }
+        return { winid = mouse_win or require('codex.state').picker_win, line = mouse_line }
       end,
     }, { __index = original_fn })
 
@@ -670,6 +671,7 @@ describe('codex.nvim', function()
     local terminal = require 'codex.terminal'
     vim.cmd 'enew'
     vim.api.nvim_buf_set_name(0, '/tmp/codex-session-source.lua')
+    local source_win = vim.api.nvim_get_current_win()
     local empty_buffers_before = listed_empty_buffers()
     terminal.setup {
       cmd = 'codex',
@@ -717,6 +719,7 @@ describe('codex.nvim', function()
     vim.api.nvim_set_current_win(state.picker_win)
     local visual_mapping = vim.fn.maparg('v', 'n', false, true)
     eq('<Nop>', visual_mapping.rhs)
+    vim.api.nvim_set_current_win(source_win)
 
     local picker_ns = vim.api.nvim_get_namespaces()['codex.session_picker']
     local marks = vim.api.nvim_buf_get_extmarks(state.picker_buf, picker_ns, 0, -1, { details = true })
@@ -731,7 +734,9 @@ describe('codex.nvim', function()
     assert(active_highlight_seen, 'active session label should be highlighted')
 
     mouse_line = 1
+    local focus_before_picker_click = vim.api.nvim_get_current_win()
     terminal.select_session_at_mouse()
+    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
     picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
     picker_width = vim.api.nvim_win_get_width(state.picker_win)
     eq(24, picker_width)
@@ -742,7 +747,9 @@ describe('codex.nvim', function()
     eq(picker_width, #picker_lines[3])
 
     mouse_line = 1
+    focus_before_picker_click = vim.api.nvim_get_current_win()
     terminal.select_session_at_mouse()
+    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
     picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
     picker_width = vim.api.nvim_win_get_width(state.picker_win)
     eq(7, picker_width)
@@ -751,13 +758,22 @@ describe('codex.nvim', function()
     eq(' (1) ', picker_lines[3]:sub(-5))
 
     mouse_line = 3
+    focus_before_picker_click = vim.api.nvim_get_current_win()
     terminal.select_session_at_mouse()
     eq(1, state.active_session_id)
-    eq(state.picker_win, vim.api.nvim_get_current_win())
+    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
     mouse_line = 4
+    focus_before_picker_click = vim.api.nvim_get_current_win()
     terminal.select_session_at_mouse()
     eq(2, state.active_session_id)
-    eq(state.picker_win, vim.api.nvim_get_current_win())
+    eq(focus_before_picker_click, vim.api.nvim_get_current_win())
+
+    vim.api.nvim_set_current_win(state.picker_win)
+    mouse_win = source_win
+    mouse_line = 1
+    terminal.select_session_at_mouse()
+    eq(source_win, vim.api.nvim_get_current_win())
+    mouse_win = nil
 
     local picker_view = vim.api.nvim_win_call(state.picker_win, function()
       return vim.fn.winsaveview()

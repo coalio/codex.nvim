@@ -266,6 +266,56 @@ local function current_win()
   return nil
 end
 
+local function valid_window(win)
+  return type(win) == 'number' and win > 0 and vim.api.nvim_win_is_valid(win)
+end
+
+local function alternate_win(exclude)
+  local ok, previous = pcall(vim.fn.winnr, '#')
+  if not ok or not previous or previous <= 0 then
+    return nil
+  end
+
+  local ok_id, win = pcall(vim.fn.win_getid, previous)
+  if ok_id and valid_window(win) and win ~= exclude then
+    return win
+  end
+  return nil
+end
+
+local function picker_mouse_restore_win(picker_win)
+  local win = current_win()
+  if valid_window(win) and win ~= picker_win then
+    return win
+  end
+  return alternate_win(picker_win)
+end
+
+local function focus_window_id(win)
+  if not valid_window(win) then
+    return false
+  end
+  pcall(vim.api.nvim_set_current_win, win)
+  return current_win() == win
+end
+
+local function restore_after_picker_mouse(picker_win, restore_to)
+  if focus_window_id(restore_to) then
+    return true
+  end
+  if focus_window_id(alternate_win(picker_win)) then
+    return true
+  end
+  return focus_window_id(state.win)
+end
+
+local function focus_mouse_target(pos)
+  if not pos or not valid_window(pos.winid) then
+    return false
+  end
+  return focus_window_id(pos.winid)
+end
+
 local function close_picker()
   if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
     pcall(vim.api.nvim_win_close, state.picker_win, true)
@@ -1224,13 +1274,14 @@ end
 function M.select_session_at_mouse()
   local pos = vim.fn.getmousepos()
   if not pos or pos.winid ~= state.picker_win then
-    return false
+    return focus_mouse_target(pos)
   end
   local picker_win = state.picker_win
+  local restore_to = picker_mouse_restore_win(picker_win)
   if state.picker_line_actions and state.picker_line_actions[pos.line] == 'toggle' then
     local ok = M.toggle_session_picker()
-    if ok and picker_win and vim.api.nvim_win_is_valid(picker_win) then
-      vim.api.nvim_set_current_win(picker_win)
+    if ok then
+      restore_after_picker_mouse(picker_win, restore_to)
     end
     return ok
   end
@@ -1239,8 +1290,8 @@ function M.select_session_at_mouse()
     return false
   end
   local ok = M.select_session(id, { focus = false })
-  if ok and picker_win and vim.api.nvim_win_is_valid(picker_win) then
-    vim.api.nvim_set_current_win(picker_win)
+  if ok then
+    restore_after_picker_mouse(picker_win, restore_to)
   end
   return ok
 end
