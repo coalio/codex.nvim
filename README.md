@@ -173,7 +173,7 @@ require('codex').setup({
   },
   session_picker = {
     enabled = true,
-    width = 24, -- expanded width; collapsed width fits "[+] Codex Sessions"
+    width = 24, -- expanded width; collapsed width fits "[+] (S)"
   },
   app_server = {
     ui = 'terminal',

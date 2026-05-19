@@ -464,6 +464,154 @@ describe('codex.nvim', function()
     vim.fn = original_fn
   end)
 
+  it('keeps \\ac on the app-server terminal path when no session exists', function()
+    local original_fn = vim.fn
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function()
+        error '\\ac should not start a raw terminal job directly'
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex'] = nil
+    package.loaded['codex.app_server'] = nil
+    package.loaded['codex.commands'] = nil
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    vim.cmd 'silent! only!'
+    vim.cmd 'enew'
+
+    local codex = require 'codex'
+    codex.setup {
+      backend = 'app_server',
+      cmd = 'codex',
+      autoinstall = false,
+      panel = true,
+      keymaps = {
+        toggle = '<leader>ac',
+        open = '<leader>aC',
+        session_new = '<leader>an',
+        yolo = '<leader>ay',
+        send = '<leader>as',
+        quit = '<C-q>',
+        interrupt = '<C-c>',
+      },
+      app_server = {
+        ui = 'terminal',
+        auto_start = false,
+      },
+    }
+
+    local app_server = require 'codex.app_server'
+    local opened_opts
+    app_server.start = function(callback)
+      callback(true)
+    end
+    app_server.open_terminal = function(opts)
+      opened_opts = opts
+    end
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('\\ac', true, false, true), 'mx', false)
+    vim.wait(500, function()
+      return opened_opts ~= nil
+    end, 10)
+
+    local state = require 'codex.state'
+    eq(1, #state.session_order)
+    assert(opened_opts and opened_opts.session == state.sessions[state.active_session_id], '\\ac should pass the placeholder session to app-server open_terminal')
+    assert(state.win and vim.api.nvim_win_is_valid(state.win), '\\ac should open the terminal pane')
+
+    codex.close()
+    vim.fn = original_fn
+  end)
+
+  it('maps \\an through the same single-session opener as YOLO', function()
+    local original_fn = vim.fn
+    local received_cmds = {}
+    local function listed_empty_buffers()
+      local count = 0
+      for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if
+          vim.api.nvim_buf_is_valid(bufnr)
+          and vim.fn.buflisted(bufnr) == 1
+          and vim.api.nvim_buf_get_name(bufnr) == ''
+          and vim.api.nvim_buf_get_option(bufnr, 'buftype') == ''
+        then
+          count = count + 1
+        end
+      end
+      return count
+    end
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd)
+        table.insert(received_cmds, cmd)
+        return 900 + #received_cmds
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex'] = nil
+    package.loaded['codex.app_server'] = nil
+    package.loaded['codex.commands'] = nil
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    vim.cmd 'silent! only!'
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-session-mapping-source.lua')
+    local empty_buffers_before = listed_empty_buffers()
+
+    require('codex').setup {
+      backend = 'app_server',
+      cmd = 'codex',
+      autoinstall = false,
+      panel = true,
+      width = 0.25,
+      keymaps = {
+        toggle = '<leader>ac',
+        open = '<leader>aC',
+        session_new = '<leader>an',
+        yolo = '<leader>ay',
+        send = '<leader>as',
+        quit = '<C-q>',
+        interrupt = '<C-c>',
+      },
+      app_server = {
+        ui = 'terminal',
+        auto_start = false,
+      },
+    }
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('\\an', true, false, true), 'mx', false)
+    vim.wait(500, function()
+      return #received_cmds == 1
+    end, 10)
+
+    local state = require 'codex.state'
+    eq(1, #received_cmds)
+    eq(1, #state.session_order)
+    eq(empty_buffers_before, listed_empty_buffers())
+    assert(vim.tbl_contains(received_cmds[1], '--config'), '\\an session should include --config')
+    assert(vim.tbl_contains(received_cmds[1], 'tui.vim_mode_default=true'), '\\an session should enable vim mode')
+    assert(not vim.tbl_contains(received_cmds[1], '--dangerously-bypass-approvals-and-sandbox'), '\\an session should not enable YOLO mode')
+
+    vim.cmd 'CodexYolo'
+    eq(2, #received_cmds)
+    eq(2, #state.session_order)
+    eq(empty_buffers_before, listed_empty_buffers())
+    assert(vim.tbl_contains(received_cmds[2], 'tui.vim_mode_default=true'), 'YOLO session should enable vim mode')
+    assert(vim.tbl_contains(received_cmds[2], '--dangerously-bypass-approvals-and-sandbox'), 'YOLO session should include bypass flag')
+
+    require('codex').close()
+    vim.fn = original_fn
+  end)
+
   it('opens numbered terminal sessions and sends to the selected session', function()
     local original_fn = vim.fn
     local next_job = 700
@@ -538,8 +686,10 @@ describe('codex.nvim', function()
     local picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
     local picker_width = vim.api.nvim_win_get_width(state.picker_win)
     eq(empty_buffers_before, listed_empty_buffers())
-    eq('[+] Codex Sessions', picker_lines[1])
-    eq(18, picker_width)
+    local expected_tui_width = math.max(1, math.floor(vim.o.columns * 0.25))
+    eq('[+] (S)', picker_lines[1])
+    eq(7, picker_width)
+    eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
     eq(' (1) ', picker_lines[3]:sub(-5))
     eq(' (2) ', picker_lines[4]:sub(-5))
     assert(not picker_lines[3]:match '[%w]+%-[%w]+', 'collapsed picker should not show the first session name')
@@ -573,6 +723,7 @@ describe('codex.nvim', function()
     picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
     picker_width = vim.api.nvim_win_get_width(state.picker_win)
     eq(24, picker_width)
+    eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
     assert(picker_lines[1]:match '%[%-%] Codex Sessions$', 'expanded picker should show a bracketed minus title')
     assert(picker_lines[3]:match '%s[%w%-]+ %(1%) $', 'expanded picker should show the first session name')
     assert(picker_lines[4]:match '%s[%w%-]+ %(2%) $', 'expanded picker should show the second session name')
@@ -582,8 +733,9 @@ describe('codex.nvim', function()
     terminal.select_session_at_mouse()
     picker_lines = vim.api.nvim_buf_get_lines(state.picker_buf, 0, -1, false)
     picker_width = vim.api.nvim_win_get_width(state.picker_win)
-    eq(18, picker_width)
-    eq('[+] Codex Sessions', picker_lines[1])
+    eq(7, picker_width)
+    eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
+    eq('[+] (S)', picker_lines[1])
     eq(' (1) ', picker_lines[3]:sub(-5))
 
     mouse_line = 3

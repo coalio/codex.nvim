@@ -22,6 +22,7 @@ local autoscroll = {
 }
 local attach_autoscroll
 local picker_title = 'Codex Sessions'
+local picker_collapsed_title = '(S)'
 
 local function active_session()
   if type(state.active_session) == 'function' then
@@ -87,6 +88,30 @@ end
 
 local function session_job(session)
   return session and session.job or state.job
+end
+
+local function create_session(opts)
+  if type(state.create_session) == 'function' then
+    return state.create_session({ yolo = opts and opts.yolo })
+  end
+  return nil
+end
+
+local function resolve_session(opts)
+  opts = opts or {}
+  local session = opts.session
+  if opts.new_session or not session and not active_session() then
+    session = create_session(opts)
+  elseif not session then
+    session = active_session()
+  elseif state.activate_session and session.id then
+    state.activate_session(session.id)
+  end
+  session = session or active_session()
+  if session and opts.yolo then
+    session.yolo = true
+  end
+  return session
 end
 
 function M.setup(config)
@@ -161,7 +186,7 @@ local function picker_width(config)
   if state.picker_expanded then
     return width
   end
-  return math.max(5, math.min(width, #('[+] ' .. picker_title)))
+  return math.max(5, math.min(width, #('[+] ' .. picker_collapsed_title)))
 end
 
 local function content_width(config)
@@ -296,6 +321,18 @@ local function configure_picker_window(win, config)
   pcall(vim.api.nvim_win_set_option, win, 'winhighlight', '')
 end
 
+local function resize_panel_windows(config)
+  if not config or not config.panel then
+    return
+  end
+  if state.picker_win and vim.api.nvim_win_is_valid(state.picker_win) then
+    pcall(vim.api.nvim_win_set_width, state.picker_win, picker_width(config))
+  end
+  if state.win and vim.api.nvim_win_is_valid(state.win) then
+    pcall(vim.api.nvim_win_set_width, state.win, content_width(config))
+  end
+end
+
 local function clip_picker_text(text, width)
   if vim.fn.strdisplaywidth(text) <= width then
     return text
@@ -316,7 +353,8 @@ local function render_picker()
   end
 
   local toggle = state.picker_expanded and '[-]' or '[+]'
-  local lines = { align_picker_line(toggle .. ' ' .. picker_title, M.config), '' }
+  local title = state.picker_expanded and picker_title or picker_collapsed_title
+  local lines = { align_picker_line(toggle .. ' ' .. title, M.config), '' }
   state.picker_line_sessions = {}
   state.picker_line_actions = {
     [1] = 'toggle',
@@ -403,6 +441,7 @@ local function open_panel_picker(config)
   state.picker_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(state.picker_win, buf)
   configure_picker_window(state.picker_win, config)
+  resize_panel_windows(config)
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_set_current_win(state.win)
   end
@@ -427,6 +466,7 @@ local function ensure_picker(config)
     open_float_picker(config)
   end
   render_picker()
+  resize_panel_windows(config)
 end
 
 local function codex_focused()
@@ -781,13 +821,7 @@ end
 function M.open(opts)
   opts = opts or {}
   local config = M.config
-  local session = opts.session or active_session()
-  if opts.new_session or not session then
-    session = state.create_session and state.create_session({ yolo = opts.yolo }) or nil
-  elseif state.activate_session and session.id then
-    state.activate_session(session.id)
-  end
-  session = session or active_session()
+  local session = resolve_session(opts)
   local cwd = launch_cwd(opts, session)
   M.cwd = cwd
   M.requested = true
@@ -1063,14 +1097,7 @@ end
 
 function M.open_placeholder(opts)
   opts = opts or {}
-  local session = opts.session
-  if not session and opts.new_session and state.create_session then
-    session = state.create_session({ yolo = opts.yolo })
-  end
-  session = session or active_session() or ensure_session({ yolo = opts.yolo })
-  if state.activate_session and session and session.id then
-    state.activate_session(session.id)
-  end
+  local session = resolve_session(opts) or ensure_session({ yolo = opts.yolo })
   local cwd = opts.cwd or util.cwd()
   M.cwd = cwd
   if session then
@@ -1217,7 +1244,7 @@ end
 
 function M.new_session(opts)
   opts = opts or {}
-  local session = state.create_session and state.create_session({ yolo = opts.yolo }) or nil
+  local session = create_session(opts)
   return M.open(vim.tbl_extend('force', opts, {
     new_session = false,
     session = session,

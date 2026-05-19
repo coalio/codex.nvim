@@ -231,7 +231,7 @@ end
 
 function M.session(target, opts)
   if target == 'new' then
-    return M.open(vim.tbl_extend('force', opts or {}, { new_session = true, insert = true }))
+    return M.new_session(opts)
   end
 
   local id = tonumber(target)
@@ -242,9 +242,17 @@ function M.session(target, opts)
   return terminal.select_session(id, opts)
 end
 
+function M.new_session(opts)
+  if config.backend == 'terminal' or config.app_server.ui == 'terminal' then
+    return terminal.new_session(opts)
+  end
+  logger.warn 'Multiple Codex sessions are only supported by the terminal Codex UI'
+  return false
+end
+
 function M.yolo(opts)
   if config.backend == 'terminal' or config.app_server.ui == 'terminal' then
-    return terminal.yolo(opts)
+    return M.new_session(vim.tbl_extend('force', opts or {}, { yolo = true }))
   end
   logger.warn 'YOLO mode is only supported by the terminal Codex UI'
   return false
