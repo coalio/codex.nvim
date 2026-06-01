@@ -170,6 +170,10 @@ function M.setup(active_config, active_api)
     api.resume()
   end, { desc = 'Resume the latest Codex session for this workspace' })
 
+  vim.api.nvim_create_user_command('CodexSession', function()
+    api.focus()
+  end, { desc = 'Open and focus the Codex session' })
+
   vim.api.nvim_create_user_command('CodexFocus', function()
     api.focus()
   end, { desc = 'Focus the Codex terminal' })

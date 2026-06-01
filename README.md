@@ -46,6 +46,7 @@ return {
     'Codex',
     'CodexToggle',
     'CodexResume',
+    'CodexSession',
     'CodexFocus',
     'CodexSend',
     'CodexAdd',
@@ -93,6 +94,7 @@ return {
 - `:Codex` opens or toggles Codex. With arguments or a visual range, it sends a prompt.
 - `:CodexToggle` toggles the Codex terminal.
 - `:CodexResume` resumes the most recent Codex session for the current workspace.
+- `:CodexSession` opens and focuses the Codex terminal, entering insert mode when the TUI is running.
 - `:CodexFocus` focuses the Codex terminal and enters insert mode when the TUI is running.
 - `:CodexSend [prompt]` sends a prompt. From visual mode or with a range, a prompt argument submits that prompt with an `@file#Lx-Ly` reference. Without a prompt argument, Codex inserts the reference into the TUI input and does not submit.
 - `:CodexAdd [path] [start_line] [end_line]` stages a file, directory, or selection as context for the next Neovim-originated prompt.
