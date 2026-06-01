@@ -12,8 +12,8 @@ describe('codex.nvim cold start installer flow', function()
     vim.cmd 'set noswapfile'
 
     -- Mock termopen to simulate successful install
-    vim.fn.termopen = function(_, opts)
-      if type(opts.on_exit) == 'function' then
+    vim.fn.termopen = function(cmd, opts)
+      if type(cmd) == 'string' and type(opts.on_exit) == 'function' then
         vim.defer_fn(function()
           opts.on_exit(0)
         end, 10)

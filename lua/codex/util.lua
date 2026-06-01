@@ -141,6 +141,15 @@ function M.cwd()
   return nil
 end
 
+function M.codex_env()
+  local editor = vim.env.EDITOR
+  local visual = vim.env.VISUAL
+  return {
+    EDITOR = editor and editor ~= '' and editor or 'nvim',
+    VISUAL = visual and visual ~= '' and visual or 'nvim',
+  }
+end
+
 function M.relative_path(path)
   local cwd = M.cwd()
   if type(path) == 'string' and type(cwd) == 'string' and path:sub(1, #cwd + 1) == cwd .. '/' then

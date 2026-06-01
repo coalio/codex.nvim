@@ -1,6 +1,7 @@
 -- tests/codex_spec.lua
 -- luacheck: globals describe it assert eq
 -- luacheck: ignore a            -- “a” is imported but unused
+
 local a = require 'plenary.async.tests'
 local eq = assert.equals
 
@@ -13,6 +14,7 @@ describe('codex.nvim', function()
       'codex.config',
       'codex.prompt',
       'codex.selection',
+      'codex.session_list',
       'codex.state',
       'codex.terminal',
       'codex.ui',
@@ -44,6 +46,8 @@ describe('codex.nvim', function()
     assert(cmds['CodexSession'], 'CodexSession command not found')
     assert(cmds['CodexFocus'], 'CodexFocus command not found')
     assert(cmds['CodexSend'], 'CodexSend command not found')
+    assert(cmds['CodexSession'], 'CodexSession command not found')
+    assert(cmds['CodexYolo'], 'CodexYolo command not found')
     assert(cmds['CodexMcp'], 'CodexMcp command not found')
   end)
 
@@ -63,6 +67,22 @@ describe('codex.nvim', function()
 
   it('defaults panel width to one quarter of the editor', function()
     eq(0.25, require('codex.config').defaults.width)
+  end)
+
+  it('defaults Codex launch editor environment to nvim', function()
+    local original_editor = vim.env.EDITOR
+    local original_visual = vim.env.VISUAL
+    vim.env.EDITOR = nil
+    vim.env.VISUAL = nil
+
+    package.loaded['codex.util'] = nil
+    local env = require('codex.util').codex_env()
+
+    eq('nvim', env.EDITOR)
+    eq('nvim', env.VISUAL)
+
+    vim.env.EDITOR = original_editor
+    vim.env.VISUAL = original_visual
   end)
 
   it('opens a floating terminal window', function()
@@ -357,6 +377,7 @@ describe('codex.nvim', function()
   it('opens the terminal TUI against a remote app-server', function()
     local original_fn = vim.fn
     local received_cmd
+    local received_opts
 
     vim.fn = setmetatable({
       executable = function()
@@ -364,6 +385,7 @@ describe('codex.nvim', function()
       end,
       termopen = function(cmd, opts)
         received_cmd = cmd
+        received_opts = opts
         if type(opts.on_exit) == 'function' then
           vim.defer_fn(function()
             opts.on_exit(0)
@@ -394,9 +416,16 @@ describe('codex.nvim', function()
 
     assert(received_cmd, 'termopen should be called')
     eq('codex', received_cmd[1])
-    eq('--remote', received_cmd[2])
+    assert(vim.tbl_contains(received_cmd, '--config'), 'vim mode config flag missing')
+    assert(vim.tbl_contains(received_cmd, 'tui.vim_mode_default=true'), 'vim mode default override missing')
     assert(vim.tbl_contains(received_cmd, '--remote'), 'remote flag missing')
     assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
+    assert(vim.tbl_contains(received_cmd, '--cd'), 'remote TUI should receive an explicit cwd')
+    eq(vim.fn.getcwd(), received_cmd[#received_cmd])
+    eq(vim.fn.getcwd(), received_opts.cwd)
+    local expected_env = require('codex.util').codex_env()
+    eq(expected_env.EDITOR, received_opts.env.EDITOR)
+    eq(expected_env.VISUAL, received_opts.env.VISUAL)
     assert(not vim.tbl_contains(received_cmd, 'resume'), 'remote TUI should not use resume')
     assert(not vim.tbl_contains(received_cmd, 'thread-123'), 'remote TUI should not resume app-server thread ids')
 
@@ -440,11 +469,436 @@ describe('codex.nvim', function()
     assert(received_cmd, 'termopen should be called')
     eq('codex', received_cmd[1])
     eq('resume', received_cmd[2])
+    assert(vim.tbl_contains(received_cmd, '--config'), 'vim mode config flag missing')
+    assert(vim.tbl_contains(received_cmd, 'tui.vim_mode_default=true'), 'vim mode default override missing')
     assert(vim.tbl_contains(received_cmd, '--last'), 'resume should use --last')
     assert(vim.tbl_contains(received_cmd, '--remote'), 'resume should connect to the remote app-server')
     assert(vim.tbl_contains(received_cmd, 'ws://127.0.0.1:45555'), 'remote url missing')
     assert(vim.tbl_contains(received_cmd, 'gpt-test'), 'configured model should be forwarded to resume')
+    assert(vim.tbl_contains(received_cmd, '--cd'), 'resume should be scoped to the Neovim cwd')
+    eq(vim.fn.getcwd(), received_cmd[#received_cmd])
 
+    vim.fn = original_fn
+  end)
+
+  it('keeps \\ac on the app-server terminal path when no session exists', function()
+    local original_fn = vim.fn
+    local received_cmds = {}
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd)
+        table.insert(received_cmds, cmd)
+        return 850 + #received_cmds
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex'] = nil
+    package.loaded['codex.app_server'] = nil
+    package.loaded['codex.commands'] = nil
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    vim.cmd 'silent! only!'
+    vim.cmd 'enew'
+
+    local codex = require 'codex'
+    codex.setup {
+      backend = 'app_server',
+      cmd = 'codex',
+      autoinstall = false,
+      panel = true,
+      keymaps = {
+        toggle = '<leader>ac',
+        open = '<leader>aC',
+        session_new = '<leader>an',
+        yolo = '<leader>ay',
+        send = '<leader>as',
+        quit = '<C-q>',
+        interrupt = '<C-c>',
+      },
+      app_server = {
+        ui = 'terminal',
+        auto_start = false,
+      },
+    }
+
+    local app_server = require 'codex.app_server'
+    local state = require 'codex.state'
+    app_server.start = function(callback)
+      state.app.listen_url = 'ws://127.0.0.1:45555'
+      callback(true)
+    end
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('\\ac', true, false, true), 'mx', false)
+    vim.wait(500, function()
+      return #received_cmds == 1
+    end, 10)
+
+    eq(1, #received_cmds)
+    eq(1, #state.session_order)
+    assert(vim.tbl_contains(received_cmds[1], '--remote'), '\\ac should open a remote app-server TUI')
+    assert(vim.tbl_contains(received_cmds[1], 'ws://127.0.0.1:45555'), '\\ac should use the app-server listen URL')
+    assert(not vim.tbl_contains(received_cmds[1], '--dangerously-bypass-approvals-and-sandbox'), '\\ac should not enable YOLO mode')
+    assert(state.win and vim.api.nvim_win_is_valid(state.win), '\\ac should open the terminal pane')
+
+    codex.close()
+    vim.fn = original_fn
+  end)
+
+  it('maps \\an and YOLO through the app-server remote session opener', function()
+    local original_fn = vim.fn
+    local received_cmds = {}
+    local function listed_empty_buffers()
+      local count = 0
+      for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if
+          vim.api.nvim_buf_is_valid(bufnr)
+          and vim.fn.buflisted(bufnr) == 1
+          and vim.api.nvim_buf_get_name(bufnr) == ''
+          and vim.api.nvim_buf_get_option(bufnr, 'buftype') == ''
+        then
+          count = count + 1
+        end
+      end
+      return count
+    end
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd)
+        table.insert(received_cmds, cmd)
+        return 900 + #received_cmds
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex'] = nil
+    package.loaded['codex.app_server'] = nil
+    package.loaded['codex.commands'] = nil
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    vim.cmd 'silent! only!'
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-session-mapping-source.lua')
+    local empty_buffers_before = listed_empty_buffers()
+
+    require('codex').setup {
+      backend = 'app_server',
+      cmd = 'codex',
+      autoinstall = false,
+      panel = true,
+      width = 0.25,
+      keymaps = {
+        toggle = '<leader>ac',
+        open = '<leader>aC',
+        session_new = '<leader>an',
+        yolo = '<leader>ay',
+        send = '<leader>as',
+        quit = '<C-q>',
+        interrupt = '<C-c>',
+      },
+      app_server = {
+        ui = 'terminal',
+        auto_start = false,
+      },
+    }
+
+    local app_server = require 'codex.app_server'
+    local state = require 'codex.state'
+    app_server.start = function(callback)
+      state.app.listen_url = 'ws://127.0.0.1:45555'
+      callback(true)
+    end
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('\\an', true, false, true), 'mx', false)
+    vim.wait(500, function()
+      return #received_cmds == 1
+    end, 10)
+
+    eq(1, #received_cmds)
+    eq(1, #state.session_order)
+    eq(empty_buffers_before, listed_empty_buffers())
+    assert(vim.tbl_contains(received_cmds[1], '--remote'), '\\an should open a remote app-server TUI')
+    assert(vim.tbl_contains(received_cmds[1], 'ws://127.0.0.1:45555'), '\\an should use the app-server listen URL')
+    assert(vim.tbl_contains(received_cmds[1], '--config'), '\\an session should include --config')
+    assert(vim.tbl_contains(received_cmds[1], 'tui.vim_mode_default=true'), '\\an session should enable vim mode')
+    assert(not vim.tbl_contains(received_cmds[1], '--dangerously-bypass-approvals-and-sandbox'), '\\an session should not enable YOLO mode')
+
+    vim.cmd 'CodexYolo'
+    eq(2, #received_cmds)
+    eq(2, #state.session_order)
+    eq(empty_buffers_before, listed_empty_buffers())
+    assert(vim.tbl_contains(received_cmds[2], '--remote'), 'YOLO should open a remote app-server TUI')
+    assert(vim.tbl_contains(received_cmds[2], 'ws://127.0.0.1:45555'), 'YOLO should use the app-server listen URL')
+    assert(vim.tbl_contains(received_cmds[2], 'tui.vim_mode_default=true'), 'YOLO session should enable vim mode')
+    assert(vim.tbl_contains(received_cmds[2], '--dangerously-bypass-approvals-and-sandbox'), 'YOLO session should include bypass flag')
+
+    require('codex').close()
+    vim.fn = original_fn
+  end)
+
+  it('opens numbered terminal sessions and sends to the selected session', function()
+    local original_fn = vim.fn
+    local next_job = 700
+    local exits = {}
+    local sent = {}
+    local mouse_line = 1
+    local mouse_win = nil
+    local function listed_empty_buffers()
+      local count = 0
+      for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+        if
+          vim.api.nvim_buf_is_valid(bufnr)
+          and vim.fn.buflisted(bufnr) == 1
+          and vim.api.nvim_buf_get_name(bufnr) == ''
+          and vim.api.nvim_buf_get_option(bufnr, 'buftype') == ''
+        then
+          count = count + 1
+        end
+      end
+      return count
+    end
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(_, opts)
+        next_job = next_job + 1
+        exits[next_job] = opts.on_exit
+        return next_job
+      end,
+      chansend = function(job, text)
+        sent[job] = (sent[job] or '') .. text
+        return #text
+      end,
+      getmousepos = function()
+        return { winid = mouse_win, line = mouse_line }
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.session_list'] = nil
+    package.loaded['codex.terminal'] = nil
+    local state = require 'codex.state'
+    local terminal = require 'codex.terminal'
+    local session_list = require 'codex.session_list'
+    local function session_win()
+      if session_list.win and vim.api.nvim_win_is_valid(session_list.win) then
+        return session_list.win
+      end
+      return nil
+    end
+    local function session_lines()
+      local win = session_win()
+      assert(win, 'Codex session tab window should be open')
+      return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
+    end
+    local function statuscolumn_line(win, line)
+      return vim.api.nvim_eval_statusline(vim.wo[win].statuscolumn, {
+        winid = win,
+        use_statuscol_lnum = line,
+        highlights = true,
+      })
+    end
+    local function statuscolumn_has_highlight(result, group)
+      for _, highlight in ipairs(result.highlights or {}) do
+        if highlight.group == group then
+          return true
+        end
+        for _, candidate in ipairs(highlight.groups or {}) do
+          if candidate == group then
+            return true
+          end
+        end
+      end
+      return false
+    end
+    local function has_left_mouse_mapping(buf)
+      for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, 'n')) do
+        if map.lhs == '<LeftMouse>' then
+          return true
+        end
+      end
+      return false
+    end
+    local function session_debug()
+      local win = session_win()
+      local lines = win and vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false) or nil
+      return vim.inspect {
+        win = win,
+        width = win and vim.api.nvim_win_get_width(win) or nil,
+        state_width = state.win and vim.api.nvim_win_is_valid(state.win) and vim.api.nvim_win_get_width(state.win) or nil,
+        lines = lines,
+      }
+    end
+    vim.cmd 'enew'
+    vim.api.nvim_buf_set_name(0, '/tmp/codex-session-source.lua')
+    local empty_buffers_before = listed_empty_buffers()
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = true,
+      use_buffer = false,
+      include_active_buffer_context = false,
+      session_list = { width = 24 },
+    }
+
+    terminal.open({ new_session = true })
+    local first_buf = state.buf
+    local first_job = state.job
+
+    terminal.new_session()
+    local second_buf = state.buf
+    local second_job = state.job
+
+    eq(2, #state.session_order)
+    eq(2, state.active_session_id)
+    local expected_tui_width = math.max(1, math.floor(vim.o.columns * 0.25))
+    assert(vim.wait(500, function()
+      local win = session_win()
+      if not win or vim.api.nvim_win_get_width(win) ~= 7 or vim.api.nvim_win_get_width(state.win) ~= expected_tui_width then
+        return false
+      end
+      return statuscolumn_line(win, 1).str:match '%(1%)' and statuscolumn_line(win, 2).str:match '%(2%)'
+    end, 10), 'session list should be visible: ' .. session_debug())
+    local list_win = session_win()
+    local list_lines = session_lines()
+    local list_width = vim.api.nvim_win_get_width(list_win)
+    local list_buf = vim.api.nvim_win_get_buf(list_win)
+    eq(empty_buffers_before, listed_empty_buffers())
+    eq(7, list_width)
+    eq(expected_tui_width, vim.api.nvim_win_get_width(state.win))
+    eq('', list_lines[1])
+    eq('', list_lines[2])
+    eq(true, vim.w[list_win].codex_session_list)
+    eq('codex-session-list', vim.api.nvim_buf_get_option(list_buf, 'filetype'))
+    eq(true, vim.api.nvim_win_get_option(list_win, 'number'))
+    eq(7, vim.api.nvim_win_get_option(list_win, 'numberwidth'))
+    eq(false, vim.api.nvim_win_get_option(list_win, 'cursorline'))
+    eq(false, vim.api.nvim_win_get_option(list_win, 'wrap'))
+    eq(0, vim.api.nvim_win_get_option(list_win, 'sidescrolloff'))
+    assert(vim.wo[list_win].winhighlight:match 'LineNr:CodexSessionListBase', 'line number highlight should not create a false selected row')
+    assert(vim.wo[list_win].winhighlight:match 'CursorLineNr:CodexSessionListBase', 'cursor line number highlight should be neutralized')
+    assert(vim.wo[list_win].statuscolumn:match 'CodexSessionListClick', 'session list should use statuscolumn click regions')
+    assert(vim.wo[list_win].statuscolumn:match 'CodexSessionListStatusColumn', 'session list should render labels through statuscolumn')
+    assert(not has_left_mouse_mapping(list_buf), 'session list should not use buffer mouse mappings')
+
+    local inactive_status = statuscolumn_line(list_win, 1)
+    local active_status = statuscolumn_line(list_win, 2)
+    assert(inactive_status.str:match '%(1%)', 'session list should show the first session id in statuscolumn')
+    assert(active_status.str:match '%(2%)', 'session list should show the second session id in statuscolumn')
+    assert(statuscolumn_has_highlight(inactive_status, 'CodexSessionListInactive'), 'inactive session should use the Codex inactive highlight')
+    assert(statuscolumn_has_highlight(active_status, 'CodexSessionListActive'), 'active session should use the Codex active highlight')
+
+    vim.api.nvim_set_current_win(state.win)
+    mouse_win = list_win
+    mouse_line = 1
+    _G.CodexSessionListClick()
+    assert(vim.wait(500, function()
+      return state.active_session_id == 1
+    end, 10), 'statuscolumn click should select session 1')
+    eq(1, state.active_session_id)
+    eq(state.win, vim.api.nvim_get_current_win())
+    assert(not vim.api.nvim_get_mode().mode:match '^[vV\22]', 'session statuscolumn click should not enter visual mode')
+
+    assert(vim.wait(500, function()
+      local win = session_win()
+      if not win then
+        return false
+      end
+      return statuscolumn_line(win, 2).str:match '%(2%)'
+    end, 10), 'session list should refresh after selecting session 1')
+    list_win = session_win()
+    eq(false, vim.api.nvim_win_get_option(list_win, 'cursorline'))
+    assert(statuscolumn_has_highlight(statuscolumn_line(list_win, 1), 'CodexSessionListActive'), 'selected session 1 should be highlighted')
+    mouse_win = list_win
+    mouse_line = 2
+    _G.CodexSessionListClick()
+    assert(vim.wait(500, function()
+      return state.active_session_id == 2
+    end, 10), 'statuscolumn click should select session 2')
+    eq(2, state.active_session_id)
+    eq(state.win, vim.api.nvim_get_current_win())
+    eq(false, vim.api.nvim_win_get_option(list_win, 'cursorline'))
+    mouse_win = nil
+
+    terminal.select_session(1, { focus = false })
+    eq(1, state.active_session_id)
+    eq(first_buf, state.buf)
+    eq(first_job, state.job)
+    eq(first_buf, vim.api.nvim_win_get_buf(state.win))
+
+    terminal.send('first')
+    terminal.select_session(2, { focus = false })
+    terminal.send('second')
+
+    assert(sent[first_job] and sent[first_job]:match 'first', 'first session should receive its prompt')
+    assert(sent[second_job] and sent[second_job]:match 'second', 'second session should receive its prompt')
+    assert(not (sent[first_job] or ''):match 'second', 'second prompt should not be sent to first session')
+
+    exits[second_job](second_job, 0)
+    eq(1, #state.session_order)
+    eq(1, state.active_session_id)
+    eq(first_buf, state.buf)
+    eq(first_buf, vim.api.nvim_win_get_buf(state.win))
+    assert(vim.wait(500, function()
+      local win = session_win()
+      return win and vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win)) == 1 and statuscolumn_line(win, 1).str:match '%(1%)'
+    end, 10), 'session list should shrink after closing a session')
+
+    terminal.close()
+    vim.fn = original_fn
+  end)
+
+  it('launches all terminal sessions with vim mode config and supports YOLO sessions', function()
+    local original_fn = vim.fn
+    local received_cmds = {}
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function(cmd)
+        table.insert(received_cmds, cmd)
+        return 800 + #received_cmds
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open({ new_session = true })
+    terminal.yolo()
+
+    assert(vim.tbl_contains(received_cmds[1], '--config'), 'normal session should include --config')
+    assert(vim.tbl_contains(received_cmds[1], 'tui.vim_mode_default=true'), 'normal session should enable vim mode')
+    assert(vim.tbl_contains(received_cmds[2], '--config'), 'YOLO session should include --config')
+    assert(vim.tbl_contains(received_cmds[2], 'tui.vim_mode_default=true'), 'YOLO session should enable vim mode')
+    assert(vim.tbl_contains(received_cmds[2], '--dangerously-bypass-approvals-and-sandbox'), 'YOLO session should include bypass flag')
+
+    terminal.close()
     vim.fn = original_fn
   end)
 
@@ -478,6 +932,181 @@ describe('codex.nvim', function()
     assert(pos[2] > 0, 'Codex panel should be on the right side')
     assert(vim.api.nvim_win_get_height(codex_win) > bottom_height, 'Codex panel should span the full editor height')
     assert(vim.api.nvim_win_get_width(codex_win) <= math.ceil(vim.o.columns * 0.4), 'Codex panel should not consume half the editor')
+  end)
+
+  it('keeps terminal windows wrapped to prevent horizontal side scrolling', function()
+    local original_fn = vim.fn
+    local source_win = vim.api.nvim_get_current_win()
+    local source_wrap = vim.api.nvim_win_get_option(source_win, 'wrap')
+    local source_sidescrolloff = vim.api.nvim_win_get_option(source_win, 'sidescrolloff')
+
+    vim.api.nvim_win_set_option(source_win, 'wrap', false)
+    vim.api.nvim_win_set_option(source_win, 'sidescrolloff', 12)
+
+    vim.fn = setmetatable({
+      executable = function()
+        return 1
+      end,
+      termopen = function()
+        local win = vim.api.nvim_get_current_win()
+        vim.api.nvim_win_set_option(win, 'wrap', false)
+        vim.api.nvim_win_set_option(win, 'sidescrolloff', 12)
+        return 987
+      end,
+    }, { __index = original_fn })
+
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+    local terminal = require 'codex.terminal'
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder()
+    local codex_win = require('codex.state').win
+    assert(vim.api.nvim_win_get_option(codex_win, 'wrap'), 'Codex terminal placeholder should wrap')
+    eq(0, vim.api.nvim_win_get_option(codex_win, 'sidescrolloff'))
+
+    terminal.open_remote('ws://127.0.0.1:45555')
+
+    assert(vim.api.nvim_win_get_option(codex_win, 'wrap'), 'Codex terminal should wrap after termopen')
+    eq(0, vim.api.nvim_win_get_option(codex_win, 'sidescrolloff'))
+
+    vim.fn = original_fn
+    if vim.api.nvim_win_is_valid(source_win) then
+      vim.api.nvim_win_set_option(source_win, 'wrap', source_wrap)
+      vim.api.nvim_win_set_option(source_win, 'sidescrolloff', source_sidescrolloff)
+    end
+  end)
+
+  it('auto-scrolls the terminal after new data when unfocused near the bottom', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    local terminal = require 'codex.terminal'
+    terminal.__test_autoscroll_delay_ms = 10
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder({ focus = false })
+    local state = require 'codex.state'
+    local lines = {}
+    for i = 1, 40 do
+      table.insert(lines, 'line ' .. i)
+    end
+    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 40
+    end, 10)
+
+    vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { 'line 41' })
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 41
+    end, 10)
+
+    eq(41, vim.api.nvim_win_get_cursor(state.win)[1])
+  end)
+
+  it('does not auto-scroll the terminal while it remains focused', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    local source_win = vim.api.nvim_get_current_win()
+    local terminal = require 'codex.terminal'
+    terminal.__test_autoscroll_delay_ms = 10
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder()
+    local state = require 'codex.state'
+    local lines = {}
+    for i = 1, 40 do
+      table.insert(lines, 'line ' .. i)
+    end
+    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+    vim.api.nvim_win_set_cursor(state.win, { 40, 0 })
+
+    vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { 'line 41' })
+    vim.wait(50)
+
+    eq(state.win, vim.api.nvim_get_current_win())
+    eq(40, vim.api.nvim_win_get_cursor(state.win)[1])
+
+    vim.api.nvim_set_current_win(source_win)
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 41
+    end, 10)
+
+    eq(41, vim.api.nvim_win_get_cursor(state.win)[1])
+  end)
+
+  it('does not auto-scroll the terminal when it is far from the bottom', function()
+    package.loaded['codex.state'] = nil
+    package.loaded['codex.prompt'] = nil
+    package.loaded['codex.terminal'] = nil
+
+    local terminal = require 'codex.terminal'
+    terminal.__test_autoscroll_delay_ms = 10
+    terminal.setup {
+      cmd = 'codex',
+      autoinstall = false,
+      keymaps = {},
+      width = 0.25,
+      height = 0.8,
+      border = 'single',
+      panel = false,
+      use_buffer = false,
+    }
+
+    terminal.open_placeholder({ focus = false })
+    local state = require 'codex.state'
+    local lines = {}
+    for i = 1, 80 do
+      table.insert(lines, 'line ' .. i)
+    end
+    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+
+    vim.wait(500, function()
+      return vim.api.nvim_win_get_cursor(state.win)[1] == 80
+    end, 10)
+
+    vim.api.nvim_win_set_cursor(state.win, { 1, 0 })
+    vim.api.nvim_win_call(state.win, function()
+      vim.cmd 'normal! zt'
+    end)
+    vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, { 'line 81' })
+    vim.wait(50)
+
+    assert(vim.api.nvim_win_get_cursor(state.win)[1] < 81, 'Codex window should not jump to the bottom')
   end)
 
   it('inserts selected file references into the remote terminal prompt', function()
@@ -531,7 +1160,7 @@ describe('codex.nvim', function()
     terminal.open_remote('ws://127.0.0.1:45555')
 
     assert(received_cmd, 'termopen should be called')
-    eq(3, #received_cmd)
+    assert(vim.tbl_contains(received_cmd, '--cd'), 'remote TUI should receive an explicit cwd')
     assert(not vim.tbl_contains(received_cmd, 'print("hi")'), 'remote command should not receive selected source text')
     vim.wait(1000, function()
       return #sent > 0

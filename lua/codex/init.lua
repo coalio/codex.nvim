@@ -59,8 +59,19 @@ function M.setup(user_config)
   app_server.setup(config, M.version:string())
   commands.setup(config, M)
 
-  if config.keymaps.toggle then
-    vim.api.nvim_set_keymap('n', config.keymaps.toggle, '<cmd>CodexToggle<CR>', { noremap = true, silent = true })
+  local function map(mode, lhs, rhs, desc)
+    if type(lhs) ~= 'string' or lhs == '' then
+      return
+    end
+    vim.keymap.set(mode, lhs, rhs, { noremap = true, silent = true, desc = desc })
+  end
+
+  if config.keymaps then
+    map({ 'n', 't' }, config.keymaps.toggle, '<cmd>CodexToggle<CR>', 'Toggle Codex')
+    map({ 'n', 't' }, config.keymaps.open, '<cmd>CodexToggle<CR>', 'Toggle Codex')
+    map({ 'n', 'v' }, config.keymaps.send, '<cmd>CodexSend<CR>', 'Send selection to Codex')
+    map('n', config.keymaps.session_new, '<cmd>CodexSession new<CR>', 'New Codex session')
+    map('n', config.keymaps.yolo, '<cmd>CodexYolo<CR>', 'New Codex YOLO session')
   end
 
   if config.track_selection then
@@ -87,33 +98,46 @@ function M.setup(user_config)
   end
 end
 
-function M.open()
+local function open_app_server_terminal(opts)
+  opts = opts or {}
+  terminal.open_placeholder(opts)
+  local terminal_opts = vim.tbl_extend('force', opts, {
+    new_session = false,
+    session = state.active_session and state.active_session() or nil,
+  })
+
+  ensure_cli(function(ok)
+    if ok then
+      app_server.start(function(start_ok, err)
+        if not terminal.is_requested(terminal_opts.session) then
+          return
+        end
+        if start_ok then
+          app_server.open_terminal(terminal_opts)
+        else
+          terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
+        end
+      end)
+    end
+  end)
+end
+
+function M.open(opts)
+  opts = opts or {}
   if config.backend == 'terminal' then
-    terminal.open()
+    terminal.open(opts)
     return
   end
 
   if config.app_server.ui == 'terminal' then
-    terminal.open_placeholder()
+    open_app_server_terminal(opts)
+    return
   end
 
   ensure_cli(function(ok)
     if ok then
-      if config.app_server.ui == 'terminal' then
-        app_server.start(function(start_ok, err)
-          if not terminal.is_requested() then
-            return
-          end
-          if start_ok then
-            app_server.open_terminal()
-          else
-            terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
-          end
-        end)
-      else
-        ui.open()
-        app_server.start()
-      end
+      ui.open()
+      app_server.start()
     end
   end)
 end
@@ -129,15 +153,17 @@ function M.resume()
     return
   end
 
-  terminal.open_placeholder({ focus = true })
+  local terminal_opts = { focus = true }
+  terminal.open_placeholder(terminal_opts)
+  terminal_opts.session = state.active_session and state.active_session() or nil
   ensure_cli(function(ok)
     if ok then
       app_server.start(function(start_ok, err)
-        if not terminal.is_requested() then
+        if not terminal.is_requested(terminal_opts.session) then
           return
         end
         if start_ok then
-          app_server.open_terminal({ resume_last = true, focus = true, insert = true })
+          app_server.open_terminal(vim.tbl_extend('force', terminal_opts, { resume_last = true, insert = true }))
         else
           terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
         end
@@ -157,15 +183,17 @@ function M.focus()
       terminal.focus({ insert = true })
       return
     end
-    terminal.open_placeholder({ focus = true })
+    local terminal_opts = { focus = true }
+    terminal.open_placeholder(terminal_opts)
+    terminal_opts.session = state.active_session and state.active_session() or nil
     ensure_cli(function(ok)
       if ok then
         app_server.start(function(start_ok, err)
-          if not terminal.is_requested() then
+          if not terminal.is_requested(terminal_opts.session) then
             return
           end
           if start_ok then
-            app_server.open_terminal({ focus = true, insert = true })
+            app_server.open_terminal(vim.tbl_extend('force', terminal_opts, { insert = true }))
           else
             terminal.show_error(err and (err.message or util.text_content(err)) or 'App Server did not become ready')
           end
@@ -211,19 +239,65 @@ function M.toggle()
   end
 end
 
+function M.session(target, opts)
+  if target == 'new' then
+    return M.new_session(opts)
+  end
+
+  local id = tonumber(target)
+  if not id then
+    logger.warn('Invalid Codex session:', tostring(target))
+    return false
+  end
+  return terminal.select_session(id, opts)
+end
+
+function M.new_session(opts)
+  opts = vim.tbl_extend('force', opts or {}, { new_session = true, insert = true })
+  if config.backend == 'terminal' then
+    return terminal.new_session(opts)
+  end
+  if config.app_server.ui == 'terminal' then
+    return open_app_server_terminal(opts)
+  end
+  logger.warn 'Multiple Codex sessions are only supported by the terminal Codex UI'
+  return false
+end
+
+function M.yolo(opts)
+  if config.backend == 'terminal' or config.app_server.ui == 'terminal' then
+    return M.new_session(vim.tbl_extend('force', opts or {}, { yolo = true }))
+  end
+  logger.warn 'YOLO mode is only supported by the terminal Codex UI'
+  return false
+end
+
 function M.send(prompt, opts)
   local send_opts = capture_send_opts(opts)
   local preserve_focus = config.backend == 'app_server' and config.app_server.ui == 'terminal' and send_opts.submit == false
 
+  if config.backend == 'terminal' then
+    terminal.open({ focus = send_opts.submit ~= false })
+    if send_opts.submit == false then
+      terminal.insert(prompt, send_opts)
+    else
+      terminal.send(prompt, send_opts)
+    end
+    return
+  end
+
   if config.backend == 'app_server' and config.app_server.ui == 'terminal' then
-    terminal.open_placeholder({ focus = not preserve_focus })
+    local terminal_opts = { focus = not preserve_focus }
+    terminal.open_placeholder(terminal_opts)
+    terminal_opts.session = state.active_session and state.active_session() or nil
+    send_opts.session = terminal_opts.session
   end
 
   ensure_cli(function(ok)
     if ok then
       if config.app_server.ui == 'terminal' then
         app_server.start(function(start_ok, err)
-          if not terminal.is_requested() then
+          if not terminal.is_requested(send_opts.session) then
             return
           end
           if start_ok then
@@ -241,15 +315,16 @@ function M.send(prompt, opts)
 end
 
 function M.statusline()
+  local app_ctx = state.app_context and state.app_context() or state.app
   if config.backend == 'terminal' then
     if state.job and not (state.win and vim.api.nvim_win_is_valid(state.win)) then
       return '[Codex]'
     end
     return ''
   end
-  if state.app.running then
+  if app_ctx.running then
     return '[Codex: running]'
-  elseif state.app.thread_id then
+  elseif app_ctx.thread_id then
     return '[Codex]'
   end
   return ''
@@ -278,6 +353,11 @@ function M._reset_for_tests()
   state.buf = nil
   state.win = nil
   state.job = nil
+  require('codex.session_list').reset()
+  state.sessions = {}
+  state.session_order = {}
+  state.active_session_id = nil
+  state.pending_thread_session_ids = {}
   state.app = {
     client = nil,
     thread_id = nil,

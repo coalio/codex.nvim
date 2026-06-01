@@ -65,6 +65,7 @@ function M.start(config, callback)
   local job
   job = vim.fn.jobstart(cmd, {
     cwd = cwd,
+    env = util.codex_env(),
     stdout_buffered = false,
     stderr_buffered = false,
     on_stdout = function(_, data)
