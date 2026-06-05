@@ -454,9 +454,7 @@ function M.start(callback)
 
   if state.app.client and state.app.client:is_running() and state.app.initialized then
     local ctx = app_context()
-    if terminal_ui() then
-      callback(true)
-    elseif ctx.thread_id then
+    if terminal_ui() or ctx.thread_id then
       callback(true)
     else
       start_thread(callback, ctx)
