@@ -33,8 +33,6 @@ local function build_cmd(config, listen_url)
   table.insert(cmd, 'app-server')
   table.insert(cmd, '--listen')
   table.insert(cmd, listen_url)
-  table.insert(cmd, '--cd')
-  table.insert(cmd, util.cwd())
   for _, feature in ipairs(config.app_server.enable_features or {}) do
     table.insert(cmd, '--enable')
     table.insert(cmd, feature)
