@@ -43,11 +43,26 @@ describe('codex.nvim', function()
     assert(cmds['Codex'], 'Codex command not found')
     assert(cmds['CodexToggle'], 'CodexToggle command not found')
     assert(cmds['CodexResume'], 'CodexResume command not found')
+    assert(cmds['CodexSession'], 'CodexSession command not found')
     assert(cmds['CodexFocus'], 'CodexFocus command not found')
     assert(cmds['CodexSend'], 'CodexSend command not found')
     assert(cmds['CodexSession'], 'CodexSession command not found')
     assert(cmds['CodexYolo'], 'CodexYolo command not found')
     assert(cmds['CodexMcp'], 'CodexMcp command not found')
+  end)
+
+  it('focuses the Codex session command', function()
+    local focused = false
+
+    require('codex.commands').setup({ keymaps = {} }, {
+      focus = function()
+        focused = true
+      end,
+    })
+
+    vim.cmd 'CodexSession'
+
+    assert(focused, 'CodexSession should focus the Codex terminal')
   end)
 
   it('defaults panel width to one quarter of the editor', function()
